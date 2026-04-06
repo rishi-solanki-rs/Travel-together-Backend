@@ -101,8 +101,20 @@ const resetPassword = asyncHandler(async (req, res) => {
  *     summary: Verify email with OTP
  */
 const verifyEmail = asyncHandler(async (req, res) => {
-  await authService.verifyEmail(req.user.id, req.body.otp);
+  await authService.verifyEmail(req.body.email, req.body.otp);
   ApiResponse.success(res, 'Email verified successfully');
+});
+
+/**
+ * @swagger
+ * /auth/resend-otp:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Resend OTP for email verification
+ */
+const resendOtp = asyncHandler(async (req, res) => {
+  await authService.resendOtp(req.body.email);
+  ApiResponse.success(res, 'A new OTP has been sent to your email.');
 });
 
 /**
@@ -130,4 +142,7 @@ const me = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'Profile fetched', user);
 });
 
-export { register, login, refresh, logout, forgotPassword, resetPassword, verifyEmail, changePassword, me };
+
+export { register, login, refresh, logout, forgotPassword, resetPassword, verifyEmail,resendOtp, changePassword, me };
+
+

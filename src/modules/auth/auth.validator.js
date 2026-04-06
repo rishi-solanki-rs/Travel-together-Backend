@@ -31,8 +31,17 @@ const changePasswordSchema = z.object({
   newPassword: z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/),
 });
 
-const verifyEmailSchema = z.object({
+const verifyOtpSchema = z.object({
+  email: z.string().email().toLowerCase(),
   otp: z.string().length(6),
 });
 
-export { registerSchema, loginSchema, refreshTokenSchema, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, verifyEmailSchema };
+const resendOtpSchema = z.object({
+  email: z.string().email().toLowerCase(),
+});
+
+
+export { registerSchema, loginSchema, refreshTokenSchema, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, verifyOtpSchema, resendOtpSchema };
+
+ 
+

@@ -22,7 +22,7 @@ const register = async (data) => {
   await authRepo.setEmailOtp(user._id, otp, expiry);
 
   const { subject, html } = emailTemplates.verifyEmail(user.name, otp);
-  await sendEmail({ to: user.email, subject, html }).catch(() => {});
+  await sendEmail({ to: user.email, subject, html }).catch(() => { });
 
   const tokens = generateTokenPair({ id: user._id, role: user.role, email: user.email });
   await authRepo.setRefreshToken(user._id, tokens.refreshToken);
@@ -95,7 +95,7 @@ const forgotPassword = async (email) => {
 
   const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
   const { subject, html } = emailTemplates.passwordReset(user.name, resetUrl);
-  await sendEmail({ to: user.email, subject, html }).catch(() => {});
+  await sendEmail({ to: user.email, subject, html }).catch(() => { });
 };
 
 const resetPassword = async ({ token, password }) => {
@@ -113,13 +113,27 @@ const resetPassword = async ({ token, password }) => {
   await authRepo.resetPassword(user._id, hashedPassword);
 };
 
-const verifyEmail = async (userId, otp) => {
-  const user = await User.findById(userId).select('+emailVerificationOtp +emailVerificationOtpExpiry');
+const verifyEmail = async (email, otp) => {
+  const user = await User.findOne({ email }).select('+emailVerificationOtp +emailVerificationOtpExpiry');
+
   if (!user) throw ApiError.notFound('User not found');
   if (user.isEmailVerified) throw ApiError.badRequest('Email already verified');
   if (!user.emailVerificationOtp || user.emailVerificationOtp !== otp) throw ApiError.badRequest('Invalid OTP');
   if (user.emailVerificationOtpExpiry < new Date()) throw ApiError.badRequest('OTP has expired. Please request a new one.');
-  await authRepo.verifyEmail(userId);
+  await authRepo.verifyEmail(user._id);
+};
+
+const resendOtp = async (email) => {
+  const user = await User.findOne({ email });
+  if (!user) throw ApiError.notFound('User not found');
+  if (user.isEmailVerified) throw ApiError.badRequest('Email already verified');
+
+  const otp = generateOtp();
+  const expiry = new Date(Date.now() + 10 * 60 * 1000);
+  await authRepo.setEmailOtp(user._id, otp, expiry);
+
+  const { subject, html } = emailTemplates.verifyEmail(user.name, otp);
+  await sendEmail({ to: user.email, subject, html }).catch(() => {});
 };
 
 const changePassword = async (userId, { currentPassword, newPassword }) => {
@@ -131,4 +145,5 @@ const changePassword = async (userId, { currentPassword, newPassword }) => {
   await authRepo.resetPassword(userId, hashed);
 };
 
-export { register, login, refreshTokens, logout, forgotPassword, resetPassword, verifyEmail, changePassword };
+export { register, login, refreshTokens, logout, forgotPassword, resetPassword, verifyEmail,resendOtp , changePassword };
+

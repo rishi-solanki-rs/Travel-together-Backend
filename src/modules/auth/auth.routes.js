@@ -5,7 +5,7 @@ import { authenticate } from '../../middlewares/authenticate.js';
 import { authLimiter } from '../../config/rateLimiter.js';
 import {
   registerSchema, loginSchema, refreshTokenSchema,
-  forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, verifyEmailSchema,
+  forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, verifyOtpSchema, resendOtpSchema
 } from './auth.validator.js';
 
 const router = express.Router();
@@ -16,7 +16,8 @@ router.post('/refresh', validateBody(refreshTokenSchema), authController.refresh
 router.post('/logout', authenticate, authController.logout);
 router.post('/forgot-password', authLimiter, validateBody(forgotPasswordSchema), authController.forgotPassword);
 router.post('/reset-password', validateBody(resetPasswordSchema), authController.resetPassword);
-router.post('/verify-email', authenticate, validateBody(verifyEmailSchema), authController.verifyEmail);
+router.post('/verify-otp', validateBody(verifyOtpSchema), authController.verifyEmail);
+router.post('/resend-otp', validateBody(resendOtpSchema), authController.resendOtp);
 router.post('/change-password', authenticate, validateBody(changePasswordSchema), authController.changePassword);
 router.get('/me', authenticate, authController.me);
 
