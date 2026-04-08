@@ -4,6 +4,7 @@ import logger from '../utils/logger.js';
 import { run as runAdminSeeder } from './adminSeeder.js';
 import { run as runCategorySeeder } from './categorySeeder.js';
 import { run as runCitySeeder } from './citySeeder.js';
+import { seedDiscoveryContent } from './discoverySeeder.js';
 import { run as runPlanSeeder } from './planSeeder.js';
 
 const runSeeders = async () => {
@@ -14,6 +15,7 @@ const runSeeders = async () => {
     await runAdminSeeder();
     await runCategorySeeder();
     await runCitySeeder();
+    await seedDiscoveryContent();
     await runPlanSeeder();
     logger.info('✅ All seeders completed successfully');
   } catch (err) {

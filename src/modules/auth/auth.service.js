@@ -5,32 +5,76 @@ import { sendEmail, emailTemplates } from '../../utils/emailHelper.js';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import User from '../../shared/models/User.model.js';
+import withTransaction from '../../shared/utils/withTransaction.js';
+import {
+  createAuthSession,
+  detectRefreshReplay,
+  rotateSessionRefresh,
+  revokeSessionByDevice,
+  emergencyRevokeAll,
+  detectSessionAnomaly,
+  hashToken,
+  verifyStepUp,
+  consumePasswordResetNonce,
+  generateSessionId,
+  isTokenRevoked,
+} from '../../operations/security/zeroTrustAuth.service.js';
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_DURATION_MS = 30 * 60 * 1000;
 
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-const register = async (data) => {
-  const existing = await authRepo.findByEmail(data.email);
-  if (existing) throw ApiError.conflict('An account with this email already exists');
+const buildRefreshTokenPayload = (user, refreshTokenVersion, sessionId) => ({
+  id: user._id,
+  role: user.role,
+  email: user.email,
+  vendorId: user.vendorId?.toString(),
+  cityId: user.cityId?.toString(),
+  tokenVersion: refreshTokenVersion,
+  sessionId,
+  tokenId: crypto.randomUUID(),
+});
 
-  const user = await authRepo.create(data);
+const buildRefreshTokenState = (user, refreshToken, refreshTokenVersion) => ({
+  refreshToken,
+  refreshTokenHash: hashToken(refreshToken),
+  refreshTokenFamilyId: user.refreshTokenFamilyId || crypto.randomUUID(),
+  refreshTokenVersion,
+});
 
-  const otp = generateOtp();
-  const expiry = new Date(Date.now() + 10 * 60 * 1000);
-  await authRepo.setEmailOtp(user._id, otp, expiry);
+const register = async (data, req) => {
+  return withTransaction(async () => {
+    const existing = await authRepo.findByEmail(data.email);
+    if (existing) throw ApiError.conflict('An account with this email already exists');
 
-  const { subject, html } = emailTemplates.verifyEmail(user.name, otp);
-  await sendEmail({ to: user.email, subject, html }).catch(() => { });
+    const user = await authRepo.create(data);
 
-  const tokens = generateTokenPair({ id: user._id, role: user.role, email: user.email });
-  await authRepo.setRefreshToken(user._id, tokens.refreshToken);
+    const otp = generateOtp();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
+    await authRepo.setEmailOtp(user._id, otp, expiry);
 
-  return { user, tokens };
+    const { subject, html } = emailTemplates.verifyEmail(user.name, otp);
+    await sendEmail({ to: user.email, subject, html }).catch(() => { });
+
+    const refreshTokenVersion = 1;
+    const sessionId = generateSessionId();
+    const tokens = generateTokenPair(buildRefreshTokenPayload(user, refreshTokenVersion, sessionId));
+    await authRepo.setRefreshTokenState(user._id, buildRefreshTokenState(user, tokens.refreshToken, refreshTokenVersion));
+    await createAuthSession({
+      user,
+      refreshToken: tokens.refreshToken,
+      refreshTokenVersion,
+      req,
+      sessionFamilyId: user.refreshTokenFamilyId || crypto.randomUUID(),
+      sessionId,
+    });
+
+    return { user, tokens };
+  });
 };
 
-const login = async ({ email, password: candidatePassword }) => {
+const login = async ({ email, password: candidatePassword }, req) => {
   const user = await authRepo.findByEmail(email);
   if (!user) throw ApiError.unauthorized('Invalid email or password');
   if (!user.isActive || user.isDeleted) throw ApiError.forbidden('Account is inactive or deleted');
@@ -51,13 +95,16 @@ const login = async ({ email, password: candidatePassword }) => {
   }
 
   await authRepo.resetFailedAttempts(user._id);
-  const tokens = generateTokenPair({ id: user._id, role: user.role, email: user.email, vendorId: user.vendorId?.toString() });
-  await authRepo.setRefreshToken(user._id, tokens.refreshToken);
+  const refreshTokenVersion = Number(user.refreshTokenVersion || 0) + 1;
+  const sessionId = generateSessionId();
+  const tokens = generateTokenPair(buildRefreshTokenPayload(user, refreshTokenVersion, sessionId));
+  await authRepo.setRefreshTokenState(user._id, buildRefreshTokenState(user, tokens.refreshToken, refreshTokenVersion));
+  await createAuthSession({ user, refreshToken: tokens.refreshToken, refreshTokenVersion, req, sessionFamilyId: user.refreshTokenFamilyId || crypto.randomUUID(), sessionId });
 
   return { user, tokens };
 };
 
-const refreshTokens = async (token) => {
+const refreshTokens = async (token, req) => {
   let decoded;
   try {
     decoded = verifyRefreshToken(token);
@@ -68,30 +115,76 @@ const refreshTokens = async (token) => {
   const user = await authRepo.findById(decoded.id);
   if (!user || !user.isActive) throw ApiError.unauthorized('User not found or inactive');
 
-  const storedToken = await User.findById(decoded.id).select('+refreshToken');
-  if (!storedToken?.refreshToken || storedToken.refreshToken !== token) {
+  const storedToken = await User.findById(decoded.id).select('+refreshToken +refreshTokenHash +refreshTokenVersion +refreshTokenFamilyId');
+  if (!storedToken) throw ApiError.unauthorized('Refresh token has been revoked');
+
+  const versionMatch = typeof decoded.tokenVersion === 'number'
+    ? storedToken.refreshTokenVersion === decoded.tokenVersion
+    : true;
+
+  const revoked = await isTokenRevoked({
+    tokenType: 'refresh',
+    tokenId: decoded.tokenId || null,
+    tokenHash: hashToken(token),
+    userId: decoded.id,
+    sessionId: decoded.sessionId || null,
+  });
+
+  if (revoked || !versionMatch) {
     throw ApiError.unauthorized('Refresh token has been revoked');
   }
 
-  const tokens = generateTokenPair({ id: user._id, role: user.role, email: user.email, vendorId: user.vendorId?.toString() });
-  await authRepo.setRefreshToken(user._id, tokens.refreshToken);
+  const replayState = await detectRefreshReplay({
+    userId: decoded.id,
+    sessionId: decoded.sessionId,
+    incomingRefreshTokenHash: hashToken(token),
+    req,
+  });
+
+  if (replayState.replay) {
+    throw ApiError.unauthorized('Refresh token replay detected. All sessions revoked.');
+  }
+
+  const refreshTokenVersion = Number(storedToken.refreshTokenVersion || 0) + 1;
+  const tokens = generateTokenPair(buildRefreshTokenPayload(user, refreshTokenVersion, decoded.sessionId));
+  await authRepo.setRefreshTokenState(user._id, buildRefreshTokenState(storedToken, tokens.refreshToken, refreshTokenVersion));
+  await rotateSessionRefresh({
+    userId: user._id,
+    sessionId: decoded.sessionId,
+    nextRefreshToken: tokens.refreshToken,
+    nextVersion: refreshTokenVersion,
+    req,
+  });
+  await detectSessionAnomaly({ userId: user._id, session: replayState.session, req });
 
   return { tokens };
 };
 
 const logout = async (userId) => {
-  await authRepo.clearRefreshToken(userId);
+  await authRepo.clearRefreshTokenState(userId);
+};
+
+const logoutDevice = async ({ userId, deviceId }) => {
+  if (!deviceId) throw ApiError.badRequest('deviceId is required');
+  return revokeSessionByDevice({ userId, deviceId, reason: 'forced_logout_device' });
+};
+
+const revokeAllSessions = async ({ userId, actorId }) => {
+  return emergencyRevokeAll({ userId, actorId, reason: 'admin_emergency_revoke_all' });
 };
 
 const forgotPassword = async (email) => {
   const user = await authRepo.findByEmail(email);
   if (!user) return;
 
-  const resetToken = signPasswordResetToken({ id: user._id });
+  const nonce = crypto.randomUUID();
+  const resetToken = signPasswordResetToken({ id: user._id, nonce });
   const expiry = new Date(Date.now() + 60 * 60 * 1000);
-  const { passwordResetToken: hashedToken } = await User.findById(user._id);
-
-  await authRepo.setResetToken(user._id, resetToken, expiry);
+  await authRepo.setResetTokenState(user._id, {
+    passwordResetToken: resetToken,
+    passwordResetTokenHash: hashToken(resetToken),
+    passwordResetNonceHash: hashToken(nonce),
+  }, expiry);
 
   const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
   const { subject, html } = emailTemplates.passwordReset(user.name, resetUrl);
@@ -106,8 +199,12 @@ const resetPassword = async ({ token, password }) => {
     throw ApiError.badRequest('Invalid or expired reset token');
   }
 
-  const user = await authRepo.findByResetToken(token);
+  const tokenHash = hashToken(token);
+  const user = (await authRepo.findByResetTokenHash(tokenHash)) || (await authRepo.findByResetToken(token));
   if (!user) throw ApiError.badRequest('Invalid or expired reset token');
+
+  const consumed = await consumePasswordResetNonce({ userId: decoded.id, nonce: decoded.nonce || '' });
+  if (!consumed) throw ApiError.badRequest('Password reset nonce already used or invalid');
 
   const hashedPassword = await bcrypt.hash(password, 12);
   await authRepo.resetPassword(user._id, hashedPassword);
@@ -145,5 +242,29 @@ const changePassword = async (userId, { currentPassword, newPassword }) => {
   await authRepo.resetPassword(userId, hashed);
 };
 
-export { register, login, refreshTokens, logout, forgotPassword, resetPassword, verifyEmail,resendOtp , changePassword };
+const performStepUp = async ({ userId, sessionId, password }) => {
+  const user = await authRepo.findByIdWithPassword(userId);
+  if (!user) throw ApiError.notFound('User not found');
+  const isValid = await user.comparePassword(password);
+  const ok = await verifyStepUp({ userId, sessionId, passwordValid: isValid });
+  if (!ok) throw ApiError.unauthorized('Step-up authentication failed');
 
+  const elevationUntil = new Date(Date.now() + Number(process.env.STEP_UP_MAX_AGE_MS || 10 * 60 * 1000));
+  await authRepo.setTemporaryElevation(userId, elevationUntil);
+  return { elevationUntil };
+};
+
+export {
+  register,
+  login,
+  refreshTokens,
+  logout,
+  logoutDevice,
+  revokeAllSessions,
+  forgotPassword,
+  resetPassword,
+  verifyEmail,
+  resendOtp,
+  changePassword,
+  performStepUp,
+};

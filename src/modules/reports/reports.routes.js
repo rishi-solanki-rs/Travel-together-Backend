@@ -9,6 +9,8 @@ import SlotAssignment from '../../shared/models/SlotAssignment.model.js';
 import Inquiry from '../../shared/models/Inquiry.model.js';
 import AnalyticsEvent from '../../shared/models/AnalyticsEvent.model.js';
 import { SUBSCRIPTION_STATUS, SLOT_STATUS } from '../../shared/constants/index.js';
+import validateRequest from '../../middlewares/validateRequest.js';
+import { reportsQuerySchema } from './reports.validator.js';
 
 const router = express.Router();
 
@@ -28,7 +30,7 @@ const getRevenueReport = asyncHandler(async (req, res) => {
       { $unwind: '$vendor' },
       { $group: { _id: '$vendor.cityId', totalRevenue: { $sum: '$amount' }, count: { $sum: 1 } } },
       { $lookup: { from: 'cities', localField: '_id', foreignField: '_id', as: 'city' } },
-      { $unwind: { path: '$city', preserveNullAndEmpty: true } },
+      { $unwind: { path: '$city', preserveNullAndEmptyArrays: true } },
       { $project: { cityName: '$city.name', totalRevenue: 1, count: 1 } },
       { $sort: { totalRevenue: -1 } },
     ]),
@@ -53,7 +55,7 @@ const getInquiryConversionReport = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'Inquiry conversion report fetched', data);
 });
 
-router.get('/revenue', authenticate, isAdmin, getRevenueReport);
+router.get('/revenue', authenticate, isAdmin, validateRequest({ query: reportsQuerySchema }), getRevenueReport);
 router.get('/slot-occupancy', authenticate, isAdmin, getSlotOccupancyReport);
 router.get('/inquiry-conversion', authenticate, isAdmin, getInquiryConversionReport);
 

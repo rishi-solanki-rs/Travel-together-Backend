@@ -14,6 +14,4 @@ const roleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-roleSchema.index({ name: 1 });
-
 export default mongoose.model('Role', roleSchema);

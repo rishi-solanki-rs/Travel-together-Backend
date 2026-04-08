@@ -39,7 +39,6 @@ const pageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-pageSchema.index({ slug: 1 });
 pageSchema.index({ type: 1, isActive: 1 });
 pageSchema.index({ cityId: 1, type: 1 });
 

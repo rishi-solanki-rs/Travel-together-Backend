@@ -1,0 +1,25 @@
+{
+  "totalRoutesValidated": 241,
+  "totalCollectionRequestsV2": 239,
+  "totalCollectionRequestsV3": 241,
+  "totalMissingRoutesFound": 2,
+  "totalExtraStaleRoutesFound": 0,
+  "totalWrongMethodRoutes": 0,
+  "totalWrongPathRoutes": 0,
+  "totalDuplicateRequests": 0,
+  "totalPayloadIssuesFixed": 65,
+  "totalAuthChainFixes": 0,
+  "totalMultipartFixes": 2,
+  "totalFlowGuideFixes": 1,
+  "missingRoutes": [
+    "GET /internal/metrics",
+    "GET /internal/ops/summary"
+  ],
+  "extraRoutes": [],
+  "wrongMethodRoutes": [],
+  "wrongPathRoutes": [],
+  "duplicateRequests": [],
+  "routesStillRequiringManualReview": [],
+  "finalConfidencePercentage": 100,
+  "executableImportReadinessPercentage": 100
+}

@@ -21,6 +21,9 @@ const subtypeSchema = new mongoose.Schema(
       type: { type: String, enum: ['text', 'number', 'range', 'select', 'multiselect', 'boolean', 'date'] },
       options: [{ label: String, value: mongoose.Schema.Types.Mixed }],
       isRequired: Boolean,
+      displayInSidebar: { type: Boolean, default: true },
+      sidebarPriority: { type: Number, default: 0 },
+      order: { type: Number, default: 0 },
     }],
     cardConfig: {
       primaryField: String,
@@ -34,7 +37,5 @@ const subtypeSchema = new mongoose.Schema(
 );
 
 subtypeSchema.index({ categoryId: 1, isActive: 1 });
-subtypeSchema.index({ slug: 1 });
-subtypeSchema.index({ key: 1 });
 
 export default mongoose.model('SubType', subtypeSchema);

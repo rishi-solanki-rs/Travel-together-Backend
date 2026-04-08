@@ -130,4 +130,22 @@ const submitKYC = async (vendorId, data) => {
   return kyc;
 };
 
-export { createVendor, getVendorProfile, updateVendorProfile, getAllVendors, approveVendor, rejectVendor, getVendorBySlug, submitKYC };
+const syncVendorEntitlement = async (vendorId, entitlement, session = null) => {
+  const update = {
+    activeSubscriptionId: entitlement.activeSubscriptionId || null,
+    currentPlan: entitlement.currentPlan || 'free',
+  };
+  return Vendor.findByIdAndUpdate(vendorId, update, { new: true, session });
+};
+
+export {
+  createVendor,
+  getVendorProfile,
+  updateVendorProfile,
+  getAllVendors,
+  approveVendor,
+  rejectVendor,
+  getVendorBySlug,
+  submitKYC,
+  syncVendorEntitlement,
+};

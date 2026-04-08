@@ -2,6 +2,7 @@ import * as authService from './auth.service.js';
 import ApiResponse from '../../utils/ApiResponse.js';
 import asyncHandler from '../../utils/asyncHandler.js';
 import User from '../../shared/models/User.model.js';
+import ApiError from '../../utils/ApiError.js';
 
 const cookieOptions = {
   httpOnly: true,
@@ -18,7 +19,7 @@ const cookieOptions = {
  *     summary: Register a new user or vendor
  */
 const register = asyncHandler(async (req, res) => {
-  const { user, tokens } = await authService.register(req.body);
+  const { user, tokens } = await authService.register(req.body, req);
   res.cookie('refreshToken', tokens.refreshToken, cookieOptions);
   ApiResponse.created(res, 'Registration successful. Please check your email to verify your account.', {
     user: { id: user._id, name: user.name, email: user.email, role: user.role },
@@ -34,7 +35,7 @@ const register = asyncHandler(async (req, res) => {
  *     summary: Login with email and password
  */
 const login = asyncHandler(async (req, res) => {
-  const { user, tokens } = await authService.login(req.body);
+  const { user, tokens } = await authService.login(req.body, req);
   res.cookie('refreshToken', tokens.refreshToken, cookieOptions);
   ApiResponse.success(res, 'Login successful', {
     user: { id: user._id, name: user.name, email: user.email, role: user.role, vendorId: user.vendorId },
@@ -51,7 +52,7 @@ const login = asyncHandler(async (req, res) => {
  */
 const refresh = asyncHandler(async (req, res) => {
   const token = req.body.refreshToken || req.cookies?.refreshToken;
-  const { tokens } = await authService.refreshTokens(token);
+  const { tokens } = await authService.refreshTokens(token, req);
   res.cookie('refreshToken', tokens.refreshToken, cookieOptions);
   ApiResponse.success(res, 'Token refreshed', { accessToken: tokens.accessToken });
 });
@@ -67,6 +68,20 @@ const logout = asyncHandler(async (req, res) => {
   await authService.logout(req.user.id);
   res.clearCookie('refreshToken');
   ApiResponse.success(res, 'Logged out successfully');
+});
+
+const logoutDevice = asyncHandler(async (req, res) => {
+  const result = await authService.logoutDevice({ userId: req.user.id, deviceId: req.body.deviceId });
+  ApiResponse.success(res, 'Device sessions revoked', result);
+});
+
+const revokeAllSessions = asyncHandler(async (req, res) => {
+  const targetUserId = req.body.userId || req.user.id;
+  if (targetUserId !== req.user.id && !['superAdmin', 'cityAdmin'].includes(req.user.role)) {
+    throw ApiError.forbidden('Only admins can revoke all sessions for another user');
+  }
+  const result = await authService.revokeAllSessions({ userId: targetUserId, actorId: req.user.id });
+  ApiResponse.success(res, 'All sessions revoked', result);
 });
 
 /**
@@ -129,6 +144,15 @@ const changePassword = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'Password changed successfully');
 });
 
+const stepUp = asyncHandler(async (req, res) => {
+  const result = await authService.performStepUp({
+    userId: req.user.id,
+    sessionId: req.user.sessionId,
+    password: req.body.password,
+  });
+  ApiResponse.success(res, 'Step-up authentication successful', result);
+});
+
 /**
  * @swagger
  * /auth/me:
@@ -143,6 +167,20 @@ const me = asyncHandler(async (req, res) => {
 });
 
 
-export { register, login, refresh, logout, forgotPassword, resetPassword, verifyEmail,resendOtp, changePassword, me };
+export {
+  register,
+  login,
+  refresh,
+  logout,
+  logoutDevice,
+  revokeAllSessions,
+  forgotPassword,
+  resetPassword,
+  verifyEmail,
+  resendOtp,
+  changePassword,
+  stepUp,
+  me,
+};
 
 

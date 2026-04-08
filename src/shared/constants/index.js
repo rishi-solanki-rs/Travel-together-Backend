@@ -136,9 +136,16 @@ const PAGE_TYPES = {
 
 const INQUIRY_STATUS = {
   NEW: 'new',
+  CALLBACK_REQUESTED: 'callback_requested',
+  CONTACTED: 'contacted',
+  FOLLOWUP_PENDING: 'followup_pending',
+  OFFER_SHARED: 'offer_shared',
+  VISIT_SCHEDULED: 'visit_scheduled',
   READ: 'read',
   REPLIED: 'replied',
   CONVERTED: 'converted',
+  CLOSED_LOST: 'closed_lost',
+  SPAM: 'spam',
   CLOSED: 'closed',
 };
 
@@ -175,6 +182,12 @@ const NOTIFICATION_TYPES = {
   LUCKY_DRAW_WINNER: 'lucky_draw_winner',
   KYC_APPROVED: 'kyc_approved',
   KYC_REJECTED: 'kyc_rejected',
+  BOOKING: 'booking',
+  PAYMENT: 'payment',
+  REFUND: 'refund',
+  SUBSCRIPTION: 'subscription',
+  PAYOUT: 'payout',
+  ADMIN_ALERT: 'admin_alert',
   SYSTEM: 'system',
 };
 

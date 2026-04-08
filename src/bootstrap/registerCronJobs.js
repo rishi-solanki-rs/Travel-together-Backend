@@ -5,6 +5,7 @@ import { run as runSubscriptionRenewal } from '../jobs/subscriptionRenewalJob.js
 import { run as runLuckyDrawPicker } from '../jobs/luckyDrawPickerJob.js';
 import { run as runAnalyticsAggregator } from '../jobs/analyticsAggregatorJob.js';
 import { run as runCampaignScheduler } from '../jobs/campaignSchedulerJob.js';
+import { run as runSubscriptionSlotReconciliation } from '../jobs/subscriptionSlotReconciliationJob.js';
 
 const wrap = (jobFn, name) => async () => {
   logger.info(`⏰ Cron: ${name} starting`);
@@ -21,6 +22,7 @@ const registerCronJobs = () => {
   cron.schedule('0 * * * *', wrap(runSlotExpiry, 'slotExpiryJob'), { name: 'slotExpiry' });
   cron.schedule('0 9 * * *', wrap(runSubscriptionRenewal, 'subscriptionRenewalJob'), { name: 'subscriptionRenewal' });
   cron.schedule('30 3 * * *', wrap(runAnalyticsAggregator, 'analyticsAggregatorJob'), { name: 'analyticsAggregator' });
+  cron.schedule('15 * * * *', wrap(runSubscriptionSlotReconciliation, 'subscriptionSlotReconciliationJob'), { name: 'subscriptionSlotReconciliation' });
   cron.schedule('0 0 * * *', wrap(runLuckyDrawPicker, 'luckyDrawPickerJob'), { name: 'luckyDrawPicker' });
 
   logger.info('📅 All cron jobs registered');

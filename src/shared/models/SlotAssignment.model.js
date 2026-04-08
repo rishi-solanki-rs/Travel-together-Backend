@@ -28,6 +28,7 @@ const slotAssignmentSchema = new mongoose.Schema(
 
     assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     notes: String,
+    idempotencyKey: { type: String, default: null },
   },
   { timestamps: true }
 );
@@ -37,5 +38,6 @@ slotAssignmentSchema.index({ listingId: 1, slotType: 1 });
 slotAssignmentSchema.index({ slotType: 1, cityId: 1, status: 1 });
 slotAssignmentSchema.index({ endDate: 1, status: 1 });
 slotAssignmentSchema.index({ priority: -1 });
+slotAssignmentSchema.index({ idempotencyKey: 1 }, { sparse: true, unique: true });
 
 export default mongoose.model('SlotAssignment', slotAssignmentSchema);

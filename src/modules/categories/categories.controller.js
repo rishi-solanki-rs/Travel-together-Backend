@@ -27,4 +27,9 @@ const remove = asyncHandler(async (req, res) => {
   ApiResponse.noContent(res);
 });
 
-export { getAll, getBySlug, create, update, remove };
+const insights = asyncHandler(async (req, res) => {
+  const data = await categoriesService.getTaxonomyInsights();
+  ApiResponse.success(res, 'Category insights fetched', data);
+});
+
+export { getAll, getBySlug, create, update, remove, insights };

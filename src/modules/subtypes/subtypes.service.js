@@ -3,6 +3,27 @@ import ApiError from '../../utils/ApiError.js';
 import { generateUniqueSlug } from '../../utils/slugify.js';
 import { cache } from '../../config/redis.js';
 
+const getAll = async (query = {}) => {
+  const categoryId = query.categoryId || 'all';
+  const isActive = query.isActive !== undefined ? String(query.isActive) : 'any';
+  const cacheKey = `subtypes:list:${categoryId}:${isActive}`;
+  const cached = await cache.get(cacheKey);
+  if (cached) return cached;
+
+  const filter = { isDeleted: false };
+  if (query.categoryId) filter.categoryId = query.categoryId;
+  if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
+
+  const subtypes = await SubType.find(filter)
+    .sort({ order: 1, name: 1 })
+    .populate('categoryId', 'name key')
+    .populate('templateId', 'name key')
+    .lean();
+
+  await cache.set(cacheKey, subtypes, 3600);
+  return subtypes;
+};
+
 const getByCategory = async (categoryId, query = {}) => {
   const cacheKey = `subtypes:cat:${categoryId}`;
   const cached = await cache.get(cacheKey);
@@ -37,10 +58,21 @@ const update = async (id, data) => {
   return subtype;
 };
 
+const updateFilterConfig = async (id, searchFilters = []) => {
+  const subtype = await SubType.findOneAndUpdate(
+    { _id: id, isDeleted: false },
+    { searchFilters },
+    { new: true }
+  );
+  if (!subtype) throw ApiError.notFound('Subtype not found');
+  await cache.delPattern('subtypes:*');
+  return subtype;
+};
+
 const remove = async (id) => {
   const subtype = await SubType.findOneAndUpdate({ _id: id }, { isDeleted: true, isActive: false });
   if (!subtype) throw ApiError.notFound('Subtype not found');
   await cache.delPattern('subtypes:*');
 };
 
-export { getByCategory, getBySlug, create, update, remove };
+export { getAll, getByCategory, getBySlug, create, update, updateFilterConfig, remove };

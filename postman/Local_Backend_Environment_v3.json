@@ -1,0 +1,104 @@
+{
+  "id": "d8bcf3f5-local-v3-env",
+  "name": "Local Backend Environment v3",
+  "values": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000",
+      "enabled": true
+    },
+    {
+      "key": "apiVersion",
+      "value": "v1",
+      "enabled": true
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "vendorId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "bookingId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "orderId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "mediaId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "notificationId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "subscriptionId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "invoiceId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "payoutId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "listingId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "planId",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "{{$guid}}",
+      "enabled": true
+    },
+    {
+      "key": "timestamp",
+      "value": "{{$timestamp}}",
+      "enabled": true
+    },
+    {
+      "key": "adminToken",
+      "value": "",
+      "enabled": true
+    },
+    {
+      "key": "vendorToken",
+      "value": "",
+      "enabled": true
+    }
+  ],
+  "_postman_variable_scope": "environment",
+  "_postman_exported_at": "2026-04-07T08:32:23.951Z",
+  "_postman_exported_using": "GPT-5.3-Codex"
+}

@@ -65,7 +65,6 @@ const cmsSectionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-cmsSectionSchema.index({ identifier: 1 });
 cmsSectionSchema.index({ pageId: 1, order: 1 });
 cmsSectionSchema.index({ cityId: 1, isActive: 1 });
 cmsSectionSchema.index({ isActive: 1, isGlobal: 1 });

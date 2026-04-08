@@ -1,9 +1,20 @@
 import rateLimit from 'express-rate-limit';
 import env from './env.js';
 
+const detectTier = (req) => {
+  if (req.headers['x-step-up'] === 'true') return 'elevated';
+  if (req.user?.role === 'superAdmin' || req.user?.role === 'cityAdmin') return 'admin';
+  return 'default';
+};
+
 const defaultLimiter = rateLimit({
   windowMs: env.RATE_LIMIT_WINDOW_MS,
-  max: env.RATE_LIMIT_MAX,
+  max: (req) => {
+    const tier = detectTier(req);
+    if (tier === 'admin') return Math.max(env.RATE_LIMIT_MAX, 1000);
+    if (tier === 'elevated') return Math.max(20, Math.floor(env.RATE_LIMIT_MAX / 2));
+    return env.RATE_LIMIT_MAX;
+  },
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -15,7 +26,11 @@ const defaultLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: env.AUTH_RATE_LIMIT_MAX,
+  max: (req) => {
+    const suspicious = String(req.headers['x-bot-suspect'] || '').toLowerCase() === 'true';
+    if (suspicious) return Math.max(2, Math.floor(env.AUTH_RATE_LIMIT_MAX / 5));
+    return env.AUTH_RATE_LIMIT_MAX;
+  },
   standardHeaders: true,
   legacyHeaders: false,
   message: {

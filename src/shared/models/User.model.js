@@ -20,14 +20,20 @@ const userSchema = new mongoose.Schema(
     emailVerificationOtp: { type: String, select: false },
     emailVerificationOtpExpiry: { type: Date, select: false },
     passwordResetToken: { type: String, select: false },
+    passwordResetTokenHash: { type: String, select: false },
+    passwordResetNonceHash: { type: String, select: false },
     passwordResetExpiry: { type: Date, select: false },
     refreshToken: { type: String, select: false },
+    refreshTokenHash: { type: String, select: false },
+    refreshTokenFamilyId: { type: String, select: false },
+    refreshTokenVersion: { type: Number, default: 0, select: false },
 
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null },
     cityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City', default: null },
     permissions: [{ type: String }],
 
     lastLoginAt: { type: Date },
+    temporaryElevationUntil: { type: Date, default: null },
     loginCount: { type: Number, default: 0 },
     failedLoginAttempts: { type: Number, default: 0, select: false },
     lockUntil: { type: Date, select: false },
@@ -56,12 +62,14 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-userSchema.index({ email: 1 });
 userSchema.index({ phone: 1, sparse: true });
 userSchema.index({ role: 1, isActive: 1 });
 userSchema.index({ vendorId: 1 });
 userSchema.index({ isDeleted: 1 });
 userSchema.index({ createdAt: -1 });
+userSchema.index({ refreshTokenFamilyId: 1 });
+userSchema.index({ passwordResetTokenHash: 1 });
+userSchema.index({ passwordResetNonceHash: 1 });
 
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();

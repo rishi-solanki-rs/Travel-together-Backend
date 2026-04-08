@@ -31,12 +31,18 @@ const markAllRead = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'All notifications marked as read');
 });
 
+const unreadCount = asyncHandler(async (req, res) => {
+  const count = await Notification.countDocuments({ userId: req.user.id, isRead: false, isDeleted: false });
+  ApiResponse.success(res, 'Unread notification count fetched', { unreadCount: count });
+});
+
 const deleteNotification = asyncHandler(async (req, res) => {
   await Notification.findOneAndUpdate({ _id: req.params.id, userId: req.user.id }, { isDeleted: true });
   ApiResponse.noContent(res);
 });
 
 router.get('/', authenticate, getMyNotifications);
+router.get('/unread-count', authenticate, unreadCount);
 router.patch('/:id/read', authenticate, markRead);
 router.patch('/read-all', authenticate, markAllRead);
 router.delete('/:id', authenticate, deleteNotification);

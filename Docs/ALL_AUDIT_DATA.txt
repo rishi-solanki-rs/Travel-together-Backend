@@ -1,0 +1,2680 @@
+﻿==============================
+FORENSIC_REPO_AUDIT.md
+==============================
+# FORENSIC_REPO_AUDIT
+
+## Audit Mode
+- Audit profile: Principal backend forensic audit
+- Depth: Multi-pass repository-wide
+- Scope: src/bootstrap, src/config, src/jobs, src/middlewares, src/modules, src/shared/models, src/utils, root docs and API artifacts
+- Evidence source: Static source scan with cross-reference against BACKEND_IMPLEMENTATION_GUIDE.md and MODULE_FLOW_DOCUMENTATION.md
+- Date: 2026-04-06
+
+## 1) Repository Structure Forensics
+
+### 1.1 Folder intent and boundary health
+- src/bootstrap: central app registration for routes, cron, swagger. Boundary is clean and appropriately thin.
+- src/config: environment, db, cors, redis, cloudinary, limiter, swagger. Boundary is mostly correct.
+- src/jobs: background automation tasks. Correct placement but no distributed lock guard in high-impact jobs.
+- src/middlewares: auth, authorize, validate, error handling. Good shared boundary.
+- src/modules: domain separation is present and generally consistent.
+- src/shared/models: all primary schema definitions are centralized; this is healthy for consistency.
+- src/utils: response envelope, token helper, cloudinary helper, logger, pagination, slug.
+
+### 1.2 Boundary violations and coupling
+- Route-heavy modules violate service/controller separation:
+- src/modules/search/search.routes.js
+- src/modules/uploads/uploads.routes.js
+- src/modules/inquiries/inquiries.routes.js
+- src/modules/wishlist/wishlist.routes.js
+- These files contain business logic, DB calls, and response formatting in route layer.
+- Effect: testability drops, reuse drops, and behavior drift increases.
+
+### 1.3 Dead/minimal module risk
+- modules with thin surface and no service layer:
+- search, uploads, inquiries, wishlist
+- modules with basic route coverage but no explicit write validation contracts:
+- hotels, thingsToDo, restaurants, shops, tribes, kidsWorld, destinations, slots, pages, cms
+- reports/seo/notifications/monetization have route-level implementation but little layering.
+
+### 1.4 Architecture scorecard (0-10)
+- Folder architecture quality: 8.2
+- Domain modularity: 7.4
+- Layering consistency: 5.6
+- Transactional safety: 4.3
+- Payload discipline: 6.1
+- Validation discipline: 4.8
+- Runtime safety under concurrency: 4.2
+- Observability and auditability: 5.0
+- Documentation fidelity vs implementation: 6.0
+- Overall production hardening score: 5.7
+
+### 1.5 Scalability risks
+- Redis key deletion uses KEYS pattern in src/config/redis.js via delPattern. This blocks with larger keyspaces.
+- Page rendering fan-out in src/modules/pages/pages.service.js runs section-level listing queries in parallel for each section.
+- Slot assignment in src/modules/slots/slots.service.js is non-transactional and vulnerable to oversubscription under contention.
+- Media upload uses in-memory + base64 conversion, increasing RAM pressure for multi-file uploads.
+
+## 2) Shared Core Forensics (Cross-cutting)
+
+### 2.1 Auth and token lifecycle
+- auth service: src/modules/auth/auth.service.js
+- repository: src/modules/auth/auth.repository.js
+- tokens: src/utils/tokenHelper.js
+
+Findings:
+- Refresh token stored as a single value per user, compared by exact equality. No token family/versioning.
+- Refresh rotation exists but no replay-detection lineage.
+- forgotPassword creates reset token and stores plain token via repository setResetToken.
+- resetPassword verifies JWT token and then queries user by DB token equality.
+- Practical risk: DB exfiltration exposes active reset tokens.
+- verifyEmail now correctly clears OTP through authRepo.verifyEmail path.
+- login failure lock mechanism exists but lock reset and counter update are separate operations.
+
+### 2.2 RBAC and authorization
+- middleware: src/middlewares/authorize.js
+
+Findings:
+- authorize/hasPermission patterns are coherent.
+- hasPermission trusts permissions embedded in JWT payload.
+- if permission set changes in DB, existing token remains stale until refresh/login.
+- isOwnVendor compares req.user.vendorId and supplied vendorId as strict inequality without ObjectId normalization.
+
+### 2.3 Users and vendors
+- users service: src/modules/users/users.service.js
+- vendor service: src/modules/vendors/vendors.service.js
+- models: src/shared/models/User.model.js, src/shared/models/Vendor.model.js
+
+Findings:
+- user soft-delete flow exists and is simple.
+- createVendor mutates user role to vendorAdmin directly; no workflow state machine.
+- vendor ownership/staff capability exists in schema, but staff assignment operational flow is not evident.
+- vendor plan state is duplicated conceptually between vendor.currentPlan and vendor.activeSubscriptionId.
+
+### 2.4 Core taxonomy: categories, subtypes, templates
+- models: Category.model.js, SubType.model.js, ListingTemplate.model.js
+- template service: src/modules/templates/templates.service.js
+
+Findings:
+- schema quality is strong for field-definition flexibility.
+- runtime enforcement of template fields against listing dynamicFields is not visible in listings service.
+- subtype.filters and cardConfig are defined, but not deeply integrated in search endpoint.
+
+### 2.5 CMS/pages payload path
+- cms service: src/modules/cms/cms.service.js
+- pages service: src/modules/pages/pages.service.js
+- models: CMSSection.model.js, Page.model.js
+
+Findings:
+- good scheduling abstraction exists.
+- duplicated $or key in getSectionsByPage causes first $or to be overwritten by second $or in JS object literal.
+- page render performs per-section listing query in enrichSection; higher latency at scale.
+- cache key is good, but invalidation is partial and not systematically tied to all content dependencies.
+
+### 2.6 Media and uploads
+- routes: src/modules/uploads/uploads.routes.js
+- helper: src/utils/cloudinaryHelper.js
+- model: MediaAsset.model.js
+
+Findings:
+- role, altText, order are accepted from request with minimal constraints.
+- conversions use data URI base64; memory amplification risk.
+- delete flow marks DB asset deleted after cloudinary delete call; no durable retry queue.
+- variant generation is helper-based and consistent.
+
+### 2.7 Audit logs and notifications
+- AuditLog model exists: src/shared/models/AuditLog.model.js
+- notifications route: src/modules/notifications/notifications.routes.js
+
+Findings:
+- audit middleware file exists in structure but functional evidence of full write-audit coverage is not found in route registration.
+- notification flow is synchronous in many write paths; no queue or dead-letter handling.
+
+### 2.8 SEO and analytics
+- seo route: src/modules/seo/seo.routes.js
+- analytics service/controller: src/modules/analytics
+- event model: AnalyticsEvent.model.js
+- job: analyticsAggregatorJob.js
+
+Findings:
+- analytics model has useful indexes but no TTL retention strategy.
+- aggregator increments listing stats daily but does not include idempotency marker per day.
+- seo route function naming typo getBySlugor indicates maintainability debt.
+
+### 2.9 Inquiries and wishlist
+- route-implemented modules, no dedicated service files.
+
+Findings:
+- inquiries uses inline zod schema and reasonable flow.
+- wishlist toggle can race under concurrent calls due read-then-write pattern.
+- wishlist stat decrement can go below zero in pathological concurrent remove paths without guard.
+
+## 3) API Surface and Frontend-Payload Awareness
+
+### 3.1 Payload size concerns
+- getListingBySlug populates vendor/category/subtype/city and returns rich listing document.
+- search endpoint returns selected fields but includes tags and stats for every card.
+- pages.render merges section metadata + listing arrays potentially large when section limits are high.
+
+### 3.2 Mobile payload and image variants
+- media variants desktop/mobile/card/thumbnail/seo are generated by helper.
+- payload contracts for choosing mobile variant are not enforced at route level.
+- CMS section has desktopImages and mobileImages arrays, but no explicit fallback policy encoded in API response shape.
+
+### 3.3 N+1 and repeated queries
+- pages.render -> enrichSection runs per section ListingBase query.
+- inquiries.submit reads listing twice in some branches (one for increment, one for title extraction).
+- route-level inline logic makes query reuse harder.
+
+## 4) Slot Monetization Forensics (Repository-level view)
+
+### 4.1 Inventory and assignment correctness
+- assignment uses read inventory, then create assignment, then decrement inventory.
+- no transaction means oversubscription under parallel requests.
+- subscription validity and payment state are not strongly enforced inside assignSlot.
+
+### 4.2 Expiry and synchronization
+- slotExpiryJob iterates expired assignments and updates assignment, inventory, listing flags sequentially.
+- no lock per assignment or inventory shard.
+- on multi-instance deployment, duplicate processing risk exists.
+
+### 4.3 Ranking and tie behavior
+- featured query sorts by static priority descending.
+- no deterministic tie-breaker beyond DB default if equal priority.
+- no decay strategy for old assignments.
+
+## 5) Cloudinary Media Forensics (Repository-level view)
+
+### 5.1 Strengths
+- central transformation presets.
+- folder map by context.
+- helper abstraction is clean and reusable.
+
+### 5.2 Risks
+- memory amplification via base64 conversion.
+- no periodic cleanup for stale isDeleted assets.
+- no dedupe by file hash or content identity.
+
+## 6) Postman + Swagger Forensics
+
+### 6.1 Swagger
+- security scheme contains bearer only.
+- refresh token cookie behavior not represented in security schemes.
+- no shared error schema components documented.
+
+### 6.2 Postman artifacts
+- generatePostman.js outputs small collection with limited route coverage.
+- POSTMAN_USAGE_GUIDE.md describes broader collection architecture than generation script produces.
+- naming mismatch among collection files mentioned in docs vs generated file name.
+
+## 7) Spec Comparison Snapshot
+
+### 7.1 Matching areas
+- modular monolith architecture is implemented.
+- core categories and suites exist.
+- cron jobs exist for campaign, slot expiry, subscriptions, analytics, lucky draw.
+
+### 7.2 Divergence areas
+- docs imply broad validator discipline; implementation has one standalone validator module plus one inline schema in inquiries.
+- docs imply comprehensive postman suite; generator currently emits minimal set.
+- docs imply robust monetization flow; transactional guarantees are incomplete.
+
+## 8) Enterprise Risk Register (Top 20)
+- Critical: slot oversubscription race in src/modules/slots/slots.service.js
+- Critical: reset token stored in queryable plain token form via auth repository path
+- High: duplicated key bug in cms getSectionsByPage query object
+- High: wishlist toggle race and stat skew in src/modules/wishlist/wishlist.routes.js
+- High: non-idempotent daily analytics aggregation if rerun inadvertently
+- High: media upload memory amplification due data URI conversion
+- High: stale JWT permission propagation in hasPermission model
+- High: no distributed lock around cron jobs in multi-instance runtime
+- Medium: cache delPattern uses KEYS and can block under larger data volume
+- Medium: route-level business logic in four modules reduces maintainability
+- Medium: vendor plan/subscription state dual-source without invariant enforcement
+- Medium: missing validators across most write endpoints
+- Medium: inconsistent docs-route naming around verify OTP/email
+- Medium: no explicit payload contracts for mobile image fallback
+- Medium: no retention policy on analytics events
+- Medium: no queueing for notification side effects
+- Medium: weak deterministic sorting ties in featured slot listing
+- Low: naming typo getBySlugor in SEO route
+- Low: unused imports in some modules indicate hygiene drift
+- Low: test coverage posture not evident from route complexity
+
+## 9) Modularity and Scalability Verdict
+- Architectural intent is strong and coherent.
+- Implementation maturity is uneven.
+- Main blockers for enterprise-grade confidence are transactional guarantees, validator coverage, and consistency between docs and executable artifacts.
+
+Final verdict:
+- Maintainability: Medium
+- Correctness under normal load: Medium
+- Correctness under concurrent load: Low-Medium
+- Revenue-critical resilience: Low-Medium
+- Scale-readiness for multi-node: Medium after targeted hardening
+
+## 10) Immediate No-Regret Actions
+- Add transaction-backed assignSlot with conditional inventory decrement.
+- Add central write-validator schemas for all mutation routes.
+- Refactor route-heavy modules into controller/service layers.
+- Introduce cron distributed lock strategy.
+- Add analytics retention and aggregator idempotency key.
+- Replace delPattern KEYS with SCAN-based invalidation strategy.
+- Add reset token hashing strategy and one-time consumption guarantees.
+- Add postman generation from actual route/validator contracts.
+
+## 11) Audit Confidence
+- Confidence level: High for structural and code-path findings.
+- Confidence level: Medium for runtime behavior requiring traffic simulation.
+- Suggested verification method: load + concurrency tests for slots, wishlist, page rendering, and upload pipeline.
+
+
+==============================
+MODULE_BY_MODULE_AUDIT.md
+==============================
+# MODULE_BY_MODULE_AUDIT
+
+## Method
+- Scope: each backend module under src/modules and key shared models
+- Lens: schema design, indexes, references, validators, controller/service layering, repository correctness, frontend payload impact
+- Risk grading: Critical, High, Medium, Low
+
+## Module: auth
+
+### Files reviewed
+- src/modules/auth/auth.routes.js
+- src/modules/auth/auth.controller.js
+- src/modules/auth/auth.service.js
+- src/modules/auth/auth.repository.js
+- src/modules/auth/auth.validator.js
+- src/shared/models/User.model.js
+
+### Strengths
+- clear route/controller/service/repository pattern
+- account lockout policy exists
+- refresh token validation against persisted token exists
+- OTP resend and verify flow exists
+
+### Findings
+- High: reset token is persisted in directly comparable form via auth.repository setResetToken and findByResetToken.
+- Medium: forgotPassword reads passwordResetToken value but does not use it.
+- Medium: crypto import in auth.service is unused.
+- Medium: refresh token model is single-token-per-user without lineage/versioning.
+- Medium: permissions are token-carried and not dynamically refreshed on RBAC changes.
+- Low: mixed spacing/formatting in export list.
+
+### Validator posture
+- strong zod coverage for auth paths only.
+
+### Frontend payload risks
+- none major in auth responses beyond standard user object exposure controls.
+
+### Score
+- Correctness: 7.1
+- Security hardening: 6.3
+- Maintainability: 7.4
+
+## Module: users
+
+### Files reviewed
+- src/modules/users/users.routes.js
+- src/modules/users/users.controller.js
+- src/modules/users/users.service.js
+- src/shared/models/User.model.js
+
+### Findings
+- Medium: no dedicated validator file for profile update payload constraints.
+- Medium: updateProfile allows profile/preferences object replacement without shape-level guard.
+- Medium: softDeleteUser has no cascade policies for related records.
+
+### Score
+- Correctness: 6.8
+- Validation: 4.9
+- Maintainability: 7.0
+
+## Module: vendors
+
+### Files reviewed
+- src/modules/vendors/vendors.routes.js
+- src/modules/vendors/vendors.controller.js
+- src/modules/vendors/vendors.service.js
+- src/shared/models/Vendor.model.js
+- src/shared/models/VendorKYC.model.js
+
+### Findings
+- High: role mutation to vendorAdmin is immediate at vendor creation; stronger review-state gate desirable.
+- Medium: getVendorProfile and list paths can become heavy with population at scale.
+- Medium: currentPlan and activeSubscriptionId dual-source risk without strict invariant checks.
+- Medium: vendor staff lifecycle not strongly represented in module API.
+
+### Score
+- Correctness: 7.0
+- Business process safety: 6.2
+
+## Module: categories
+
+### Files reviewed
+- src/modules/categories
+- src/shared/models/Category.model.js
+
+### Findings
+- Medium: write validator coverage not explicit.
+- Medium: cache invalidation strategy across categories/subtypes/templates is fragmented.
+
+### Score
+- Correctness: 7.3
+
+## Module: subtypes
+
+### Files reviewed
+- src/modules/subtypes
+- src/shared/models/SubType.model.js
+
+### Findings
+- Medium: searchFilters and cardConfig are schema-rich but runtime enforcement/utilization is partial.
+- Low: subtype key and slug uniqueness are good; operational governance for edits not explicit.
+
+### Score
+- Correctness: 7.2
+
+## Module: templates
+
+### Files reviewed
+- src/modules/templates/templates.service.js
+- src/modules/templates/templates.controller.js
+- src/modules/templates/templates.routes.js
+- src/shared/models/ListingTemplate.model.js
+
+### Findings
+- High: listing creation/update does not visibly enforce ListingTemplate field rules against dynamicFields.
+- Medium: template cache invalidation exists and is broad (pattern-based).
+- Medium: no compatibility strategy for template version migration and existing listings.
+
+### Score
+- Correctness: 6.5
+- Extensibility: 8.0
+
+## Module: pages
+
+### Files reviewed
+- src/modules/pages/pages.service.js
+- src/modules/pages/pages.controller.js
+- src/modules/pages/pages.routes.js
+- src/shared/models/Page.model.js
+
+### Findings
+- High: renderPage does per-section enrich queries, causing fan-out under section-heavy pages.
+- Medium: enrichSection filter uses subtypeId with subtypeKey semantics risk.
+- Medium: schedule filtering in render is safe but duplicated with cms scheduling logic.
+- Medium: no route-level body validation on page create/update.
+
+### Score
+- Correctness: 6.7
+- Performance resilience: 5.8
+
+## Module: cms
+
+### Files reviewed
+- src/modules/cms/cms.service.js
+- src/modules/cms/cms.controller.js
+- src/modules/cms/cms.routes.js
+- src/shared/models/CMSSection.model.js
+
+### Findings
+- High: getSectionsByPage query object has two $or keys; earlier one is overwritten in JS object literal.
+- High: this can alter intended page/global selection behavior and return wrong section set.
+- Medium: no explicit validation for scheduledFrom <= scheduledTo.
+- Medium: cache invalidation uses broad pattern deletion.
+
+### Score
+- Correctness: 5.9
+
+## Module: uploads
+
+### Files reviewed
+- src/modules/uploads/uploads.routes.js
+- src/utils/cloudinaryHelper.js
+- src/shared/models/MediaAsset.model.js
+
+### Findings
+- High: memory + base64 conversion for each file is expensive under concurrent uploads.
+- High: no explicit schema validation for context, role, altText length, order range.
+- Medium: delete flow lacks durable retry queue for cloudinary failures.
+- Medium: module lacks controller/service separation.
+
+### Score
+- Correctness: 6.1
+- Stability at scale: 5.2
+
+## Module: listings
+
+### Files reviewed
+- src/modules/listings/listings.service.js
+- src/modules/listings/listings.controller.js
+- src/modules/listings/listings.routes.js
+- src/shared/models/ListingBase.model.js
+
+### Findings
+- High: createListing updates vendor stats in separate call; no transaction around listing + vendor stats.
+- High: listing-template enforcement not integrated.
+- Medium: getListingBySlug increments stats with non-atomic read-followed-write path relative to page view stream.
+- Medium: no strong validator coverage across write routes.
+
+### Score
+- Correctness: 6.6
+
+## Module: search
+
+### Files reviewed
+- src/modules/search/search.routes.js
+- src/shared/models/ListingBase.model.js
+
+### Findings
+- Medium: route-only module with embedded logic and no service abstraction.
+- Medium: sortBy and sort composition acceptable but no validator envelope.
+- Medium: text search index present; no typo tolerance or advanced search strategy.
+
+### Score
+- Correctness: 6.9
+
+## Module: inquiries
+
+### Files reviewed
+- src/modules/inquiries/inquiries.routes.js
+- src/shared/models/Inquiry.model.js
+
+### Findings
+- Medium: good inline zod schema, but module still route-heavy.
+- Medium: submit flow performs multiple DB operations synchronously and includes email/notification side effects inline.
+- Medium: no queue for notification/email; latency and reliability coupling.
+
+### Score
+- Correctness: 7.0
+
+## Module: wishlist
+
+### Files reviewed
+- src/modules/wishlist/wishlist.routes.js
+- src/shared/models/Wishlist.model.js
+
+### Findings
+- High: toggle flow vulnerable to race under concurrent requests.
+- Medium: wishlistCount increments/decrements can drift without floor guard and transaction.
+- Medium: route-heavy implementation, no service layer.
+
+### Score
+- Correctness: 5.9
+
+## Module: notifications
+
+### Files reviewed
+- src/modules/notifications/notifications.routes.js
+- src/shared/models/Notification.model.js
+
+### Findings
+- Medium: CRUD-like behavior is clean.
+- Medium: no retention strategy/TTL for deleted notifications.
+- Low: read-all operation does not filter isDeleted.
+
+### Score
+- Correctness: 7.1
+
+## Module: seo
+
+### Files reviewed
+- src/modules/seo/seo.routes.js
+- src/shared/models/SEOConfig.model.js
+
+### Findings
+- Low: method name typo getBySlugor.
+- Medium: write payload lacks explicit validator in route.
+
+### Score
+- Correctness: 7.2
+
+## Module: analytics
+
+### Files reviewed
+- src/modules/analytics/analytics.service.js
+- src/modules/analytics/analytics.controller.js
+- src/modules/analytics/analytics.routes.js
+- src/shared/models/AnalyticsEvent.model.js
+- src/jobs/analyticsAggregatorJob.js
+
+### Findings
+- High: analytics event collection has no TTL retention.
+- High: aggregator increments daily stats without idempotency marker.
+- Medium: trackEvent intentionally swallows errors; operational visibility limited.
+
+### Score
+- Correctness: 6.4
+
+## Module: plans
+
+### Files reviewed
+- src/modules/plans/plans.service.js
+- src/shared/models/SubscriptionPlan.model.js
+
+### Findings
+- Medium: CRUD is straightforward.
+- Medium: cache-only invalidation on update/create but no schema-level constraints for pricing completeness.
+
+### Score
+- Correctness: 7.3
+
+## Module: subscriptions
+
+### Files reviewed
+- src/modules/subscriptions/subscriptions.service.js
+- src/shared/models/VendorSubscription.model.js
+
+### Findings
+- High: create and activate paths are not transactional with vendor state update.
+- Medium: cancellation flow does not ensure downstream slot revocation.
+- Medium: status and paymentStatus transitions are permissive.
+
+### Score
+- Correctness: 6.2
+
+## Module: slots
+
+### Files reviewed
+- src/modules/slots/slots.service.js
+- src/modules/slots/slots.controller.js
+- src/modules/slots/slots.routes.js
+- src/shared/models/SlotInventory.model.js
+- src/shared/models/SlotAssignment.model.js
+
+### Findings
+- Critical: non-transactional assignment with inventory decrement race.
+- High: assign route has no body validation.
+- High: no subscription state hard-check inside assignSlot.
+- Medium: featured ordering uses priority only; tie behavior not explicit.
+
+### Score
+- Correctness: 4.8
+
+## Module: monetization
+
+### Files reviewed
+- src/modules/monetization/monetization.routes.js
+
+### Findings
+- Medium: dashboard is useful summary but route-layer aggregation only.
+- Medium: no historical trend endpoint.
+
+### Score
+- Correctness: 6.9
+
+## Module: luckyDraw
+
+### Files reviewed
+- src/modules/luckyDraw/luckyDraw.service.js
+- src/jobs/luckyDrawPickerJob.js
+
+### Findings
+- High: winner selection uses Math.random sorting, not cryptographically strong.
+- Medium: anti-duplication safeguards exist but fairness audit trail can be improved.
+
+### Score
+- Correctness: 6.3
+
+## Module: reports
+
+### Files reviewed
+- src/modules/reports/reports.routes.js
+
+### Findings
+- Medium: route-only analytics/report module.
+- Medium: no validator contracts for startDate/endDate.
+
+### Score
+- Correctness: 6.8
+
+## Vendor Suite Modules (overview score)
+- hotels: 6.3
+- thingsToDo: 6.2
+- restaurants: 7.1
+- shops: 6.9
+- tribes: 6.5
+- kidsWorld: 6.0
+- destinations: 6.6
+
+## Validator-by-validator forensic snapshot
+- Dedicated validator modules found: 1
+- Route-inline validator schema found: 1
+- Mutation routes without explicit validator layer: majority
+- Highest risk write endpoints without body validators:
+- slots.assign, slots.createInventory
+- pages.create/update/publish
+- cms.create/update/delete/reorder
+- uploads.single/multiple/delete
+- vendor-suite create/update endpoints
+
+## Shared model indexing quality snapshot
+- Good baseline indexes on major collections.
+- Missing or weak areas:
+- AnalyticsEvent retention index (TTL missing).
+- Additional compound indexes may be needed for heavy CMS/page filter combinations.
+- Slot assignment query/index coverage is acceptable but does not prevent race conditions.
+
+## Module-by-module hardening priority
+1. slots
+2. cms
+3. uploads
+4. subscriptions
+5. wishlist
+6. pages
+7. analytics
+8. listings
+9. route-heavy modules refactor wave
+
+## Overall conclusion
+- Domain partitioning is strong.
+- Layering and validation discipline are inconsistent.
+- Revenue and concurrency safety is below enterprise bar in slots/subscriptions/wishlist paths.
+- The fastest risk reduction is transaction guards + validator expansion + route-to-service extraction.
+
+
+==============================
+VENDOR_SUITE_DEEP_AUDIT.md
+==============================
+# VENDOR_SUITE_DEEP_AUDIT
+
+## Scope
+- Suites audited:
+- A) hotels
+- B) things-to-do
+- C) restaurants
+- D) shops
+- E) world tribes
+- F) kids world
+- G) destination packages
+
+## Cross-suite baseline checks
+- Listing linkage uses listingId references in extension models.
+- Most suite endpoints rely on isVendorAdmin auth, but body validation is largely missing.
+- Pricing semantics differ by suite and are not normalized at contract level.
+- Search-readiness depends heavily on ListingBase fields; extension-specific filters are thin.
+
+---
+
+## A) Hotel Suite Forensics
+
+### Files reviewed
+- src/modules/hotels/hotels.routes.js
+- src/modules/hotels/hotels.controller.js
+- src/modules/hotels/hotels.service.js
+- src/shared/models/Hotel.model.js
+- src/shared/models/HotelRoom.model.js
+- src/shared/models/HotelPricingCalendar.model.js
+
+### 1. Current business flow
+- listing created in listings module
+- hotel profile created by listingId
+- rooms added under hotelId
+- pricing calendar bulk upsert by room/date
+- optional blackout entries written to pricing calendar
+
+### 2. Schema design quality
+- Hotel, HotelRoom, and HotelPricingCalendar are properly separated.
+- Room-level structure is strong for inventory and pricing dimensions.
+- Calendar model supports seasonal and date-specific override patterns.
+
+### 3. Missing operational models
+- No booking/reservation model in suite.
+- No booking status lifecycle for pending/confirmed/cancelled/refunded.
+- No payment transaction model tied to room nights.
+
+### 4. Pricing logic maturity
+- Base pricing and per-date pricing exist.
+- Effective price composition logic at read time is not centralized in service.
+- No tax/fee policy engine integration visible.
+
+### 5. Media flow
+- Media lifecycle is generic via uploads and listing/gallery fields.
+- No suite-level enforcement for minimum cover/room image standards.
+
+### 6. Subtype/template support
+- Template system exists globally, but suite does not enforce template field completeness before publish.
+
+### 7. Search/filter readiness
+- Relies on ListingBase text and pricing fields.
+- Room/facility/date-specific availability filters are not integrated in search route.
+
+### 8. Frontend rendering payloads
+- Hotel detail likely requires listing + hotel profile + rooms + optional calendar data.
+- Current paths do not provide a single optimized contract for date-aware pricing display.
+
+### 9. Analytics readiness
+- Generic listing analytics works.
+- No room-level conversion metrics or booking funnel events.
+
+### 10. Monetization readiness
+- Listing can be featured via slots.
+- Missing booking engine means direct hotel commerce monetization is incomplete.
+
+### Hotel suite key findings
+- High: missing booking model blocks true room inventory monetization.
+- High: blackout writes do not guarantee blackout enforcement in booking flow.
+- Medium: room CRUD has no body validator contracts.
+- Medium: pricing calendar upsert lacks transaction relation with business events.
+
+### Hotel suite score
+- Business completeness: 5.5
+- Technical correctness: 6.4
+- Monetization readiness: 6.0
+
+---
+
+## B) Things-To-Do Suite Forensics
+
+### Files reviewed
+- src/modules/thingsToDo/thingsToDo.routes.js
+- src/modules/thingsToDo/thingsToDo.controller.js
+- src/modules/thingsToDo/thingsToDo.service.js
+- src/shared/models/TourItinerary.model.js
+- src/shared/models/TourDeparture.model.js
+
+### 1. Current business flow
+- itinerary created per listing
+- departure entries created per itinerary
+- upcoming departures fetched with date window
+
+### 2. Schema design quality
+- itinerary and departure split is appropriate.
+- departure model supports scheduling and operational status.
+
+### 3. Missing operational models
+- no booking/seat reservation entity for departures.
+- no participant manifest model.
+
+### 4. Pricing logic
+- depends on listing-level pricing and departure data.
+- no dynamic per-departure fare model visible.
+
+### 5. Media flow
+- inherited from listing/media.
+- no activity-level media policy enforcement.
+
+### 6. Subtype/template support
+- present at listing layer, not strictly suite-enforced.
+
+### 7. Search/filter readiness
+- search endpoint not enriched with departure date or availability filters.
+
+### 8. Frontend payloads
+- itinerary/departure likely fetched separately; no consolidated public itinerary payload contract.
+
+### 9. Analytics readiness
+- event-level analytics available by listing.
+- no departure-level demand analytics rollups.
+
+### 10. Monetization readiness
+- slot monetization available.
+- booking monetization not complete due missing reservation model.
+
+### Things-to-do findings
+- High: no departure capacity enforcement transaction path.
+- Medium: cancellation endpoint updates status only; downstream effects not modeled.
+- Medium: no explicit validators on create/update/cancel payloads.
+
+### Things-to-do score
+- Business completeness: 5.8
+- Technical correctness: 6.3
+- Monetization readiness: 6.1
+
+---
+
+## C) Restaurant Suite Forensics
+
+### Files reviewed
+- src/modules/restaurants/restaurants.routes.js
+- src/modules/restaurants/restaurants.controller.js
+- src/modules/restaurants/restaurants.service.js
+- src/shared/models/Restaurant.model.js
+- src/shared/models/MenuCategory.model.js
+- src/shared/models/MenuItem.model.js
+
+### 1. Current business flow
+- create restaurant profile per listing
+- create menu categories
+- add/update/delete menu items
+- fetch full menu by restaurant
+
+### 2. Schema design quality
+- category/item decomposition is healthy.
+- supports ordering and availability flags.
+
+### 3. Missing operational models
+- no table booking model.
+- no order/cart model.
+
+### 4. Pricing logic
+- item prices likely reside at item level.
+- no discount campaign application shown.
+
+### 5. Media flow
+- menu media can be stored via generic uploads.
+- no strict image ratio/size constraints for menu cards.
+
+### 6. Subtype/template support
+- available globally; not strictly enforced during profile publish.
+
+### 7. Search/filter readiness
+- listing-level search only.
+- no cuisine/menu-aware search path in search module.
+
+### 8. Frontend payloads
+- full menu endpoint performs category query + item query and joins in app layer.
+- potential scale issue for very large menus without pagination.
+
+### 9. Analytics readiness
+- listing-level metrics only.
+- no menu-item click/order proxy analytics.
+
+### 10. Monetization readiness
+- slot boosting works.
+- direct commerce monetization not integrated.
+
+### Restaurant findings
+- Medium: full menu retrieval may grow heavy for large catalogs.
+- Medium: menu CRUD lacks zod/joi contract at route edge.
+- Low: deletion strategy is soft deactivate; cleanup policy absent.
+
+### Restaurant score
+- Business completeness: 6.7
+- Technical correctness: 7.1
+- Monetization readiness: 6.5
+
+---
+
+## D) Shop Suite Forensics
+
+### Files reviewed
+- src/modules/shops/shops.routes.js
+- src/modules/shops/shops.controller.js
+- src/modules/shops/shops.service.js
+- src/shared/models/ShopCatalog.model.js
+- src/shared/models/ProductItem.model.js
+
+### 1. Current business flow
+- create catalog per listing
+- add products
+- update stock and product metadata
+
+### 2. Schema design quality
+- catalog/product split is correct.
+- product has active/deleted/in-stock style lifecycle fields.
+
+### 3. Missing operational models
+- no cart/order/checkout entity.
+- no SKU-level variant model beyond item-level fields.
+
+### 4. Pricing logic
+- product-level price likely exists but no promotion engine.
+- no price history model.
+
+### 5. Media flow
+- generic uploads usable.
+- no product media variant policy enforcement.
+
+### 6. Subtype/template support
+- global template exists, not enforced as gate.
+
+### 7. Search/filter readiness
+- getProducts supports collection/inStock/isFeatured but no full-text product search in suite route.
+
+### 8. Frontend payloads
+- paginated product list is available.
+- no explicit card payload contract with computed flags.
+
+### 9. Analytics readiness
+- listing level only.
+- no item-level conversion counters.
+
+### 10. Monetization readiness
+- slots available.
+- direct ecommerce monetization absent.
+
+### Shop findings
+- Medium: updateStock is simple and can race under concurrent decrements if used for order simulation.
+- Medium: missing validators for catalog/product mutation payloads.
+
+### Shop score
+- Business completeness: 6.2
+- Technical correctness: 6.9
+- Monetization readiness: 6.3
+
+---
+
+## E) World Tribes Suite Forensics
+
+### Files reviewed
+- src/modules/tribes/tribes.routes.js
+- src/modules/tribes/tribes.controller.js
+- src/modules/tribes/tribes.service.js
+- src/shared/models/TribeExperience.model.js
+
+### 1. Current business flow
+- create/update experience profile
+- append/update schedule entries
+
+### 2. Schema design quality
+- experience + schedule model is compact and suitable for storytelling products.
+
+### 3. Missing operational models
+- no booking/participation model.
+- no capacity management model.
+
+### 4. Pricing logic
+- pricing appears listing-level.
+- schedule-level differential pricing not explicit.
+
+### 5. Media flow
+- inherited via listing/media.
+
+### 6. Subtype/template support
+- available globally.
+
+### 7. Search/filter readiness
+- no dedicated tribe-experience search filters exposed.
+
+### 8. Frontend payloads
+- schedule updates overwrite entry object and may drop fields if partial update used.
+
+### 9. Analytics readiness
+- generic listing analytics only.
+
+### 10. Monetization readiness
+- slot monetization yes.
+- direct booking monetization no.
+
+### Tribes findings
+- Medium: updateScheduleEntry replaces schedule item with provided object; partial updates are risky.
+- Medium: no validation schemas for schedule entries.
+
+### Tribes score
+- Business completeness: 5.9
+- Technical correctness: 6.5
+
+---
+
+## F) Kids World Suite Forensics
+
+### Files reviewed
+- src/modules/kidsWorld/kidsWorld.routes.js
+- src/modules/kidsWorld/kidsWorld.controller.js
+- src/modules/kidsWorld/kidsWorld.service.js
+- src/shared/models/KidsActivity.model.js
+
+### 1. Current business flow
+- create activity profile
+- add sessions
+- update availability counters
+
+### 2. Schema quality
+- session-based model is appropriate.
+
+### 3. Missing operational models
+- no booking registration model.
+- no guardian/child participant records.
+
+### 4. Pricing logic
+- likely listing/session level without invoice/order.
+
+### 5. Media flow
+- inherited generic pipeline.
+
+### 6. Subtype/template support
+- present but not strict.
+
+### 7. Search/filter readiness
+- no session/time based search integration.
+
+### 8. Frontend payloads
+- no dedicated schedule payload endpoint optimized for calendar UIs.
+
+### 9. Analytics readiness
+- listing-level only.
+
+### 10. Monetization readiness
+- slot monetization available.
+- activity booking monetization incomplete.
+
+### Kids world findings
+- High: updateSessionAvailability uses $inc without lower-bound condition.
+- Medium: no validators for session creation/update.
+
+### Kids world score
+- Business completeness: 5.6
+- Technical correctness: 6.0
+
+---
+
+## G) Destination Packages Suite Forensics
+
+### Files reviewed
+- src/modules/destinations/destinations.routes.js
+- src/modules/destinations/destinations.controller.js
+- src/modules/destinations/destinations.service.js
+- src/shared/models/DestinationPackage.model.js
+
+### 1. Current business flow
+- create package per listing
+- update package details
+- append departure dates
+- list packages by type
+
+### 2. Schema design quality
+- package model is coherent for travel package metadata.
+
+### 3. Missing operational models
+- no booking and passenger manifest model.
+- no quote acceptance model.
+
+### 4. Pricing logic
+- package pricing exists but lacks explicit strategy semantics across per-person vs package total in API contracts.
+
+### 5. Media flow
+- shared media path only.
+
+### 6. Subtype/template support
+- globally available, no strict enforcement.
+
+### 7. Search/filter readiness
+- by package type exists; richer filters absent.
+
+### 8. Frontend payloads
+- basic payload available; no compact cards + detailed payload separation.
+
+### 9. Analytics readiness
+- listing-level analytics only.
+
+### 10. Monetization readiness
+- slot monetization available.
+- package booking monetization incomplete.
+
+### Destinations findings
+- Medium: no payload validators for package/departure writes.
+- Medium: sort by nested pricing path assumes consistent schema population.
+
+### Destinations score
+- Business completeness: 6.0
+- Technical correctness: 6.6
+
+---
+
+## Cross-suite pricing and monetization forensic conclusions
+- monetization today is primarily visibility-based (plans + slots).
+- transactional commerce (booking/order) is largely absent across suites.
+- this creates a gap between lead-gen model and full marketplace expectations described in docs.
+
+## Cross-suite media forensic conclusions
+- infrastructure exists for variant generation.
+- suite-specific media contracts are not codified, creating inconsistent frontend experiences.
+
+## Cross-suite search/filter forensic conclusions
+- core search is listing-centric.
+- extension-specific filtering is weak, limiting discoverability for advanced user intent.
+
+## Cross-suite analytics conclusions
+- listing-level analytics and event tracking exist.
+- suite-specific funnel analytics are not mature.
+
+## Priority remediation for suites
+1. Introduce booking/order primitives per suite family.
+2. Add strict write validators for all suite mutation routes.
+3. Implement suite-specific search facets backed by indexes.
+4. Add compact vs detailed frontend payload contracts.
+5. Add suite-specific analytics dimensions and conversion events.
+
+## Vendor suite readiness matrix
+- Hotels: Lead-gen ready, booking-light, not full commerce-ready
+- Things-To-Do: Lead-gen ready, departure scheduling ready, booking-light
+- Restaurants: Menu showcase ready, ordering/booking not integrated
+- Shops: Catalog ready, order pipeline absent
+- Tribes: Experience showcase ready, booking absent
+- Kids World: Session showcase ready, capacity race must be fixed
+- Destinations: Package showcase ready, booking/quote workflow shallow
+
+
+==============================
+CMS_PAYLOAD_AUDIT.md
+==============================
+# CMS_PAYLOAD_AUDIT
+
+## Scope
+- src/modules/cms
+- src/modules/pages
+- src/shared/models/CMSSection.model.js
+- src/shared/models/Page.model.js
+- related listing hydration paths in src/modules/listings and search
+
+## Executive technical position
+- CMS/page architecture is strong in concept.
+- Current payload and query behavior has correctness and efficiency risks.
+- Primary concerns: query condition overwrite bug, section-level fan-out, loose filter semantics, and non-standardized frontend payload contracts.
+
+## 1) Homepage and CMS rendering pipeline forensic map
+
+### Request path
+- pages.routes.js -> GET /pages/render/:slug
+- pages.controller.js -> pages.service.renderPage
+- renderPage pulls page + section refs, applies visibility/schedule, then enriches each section via enrichSection
+
+### Observed behavior
+- section enrichment runs independent listing queries for each section.
+- each listing query uses populate(cityId, subtypeId).
+- response contains page meta + fully expanded sections.
+
+## 2) Critical correctness issue in CMS query composition
+
+### Evidence
+- cms.service.js getSectionsByPage query object has two $or keys.
+- In JavaScript object literals, duplicate keys are overwritten by the later key.
+
+### Impact
+- intended condition on page scope ($or: pageId or isGlobal) is overwritten by schedule $or.
+- resulting query may return unexpected sections and miss scoped sections.
+- frontend can render wrong blocks, especially on city/category pages.
+
+### Risk level
+- High
+
+### Safe fix strategy
+- rewrite query with explicit $and of scope and schedule expressions.
+- add tests for scope x schedule matrix.
+
+## 3) Frontend payload inefficiencies
+
+### 3.1 Section payload bloat
+- CMSSection includes desktopImages, mobileImages, listingIds, vendorIds, config map, content, CTA objects.
+- all data may be serialized even when frontend only needs subset per section type.
+
+### 3.2 Listing payload per section
+- enrichSection selects a curated listing projection, which is positive.
+- repeated for every section causes duplicate listing serialization across sections.
+
+### 3.3 Optional fields and null density
+- sections include many optional/null fields; no shape compaction by section type.
+
+### 3.4 Mobile variant handling
+- model has mobileImages, desktopImages.
+- no explicit fallback contract in API response (for example mobile fallback to desktop order-matched item).
+
+## 4) Query fan-out and repeated DB work
+
+### N+1-ish pattern
+- number of listing queries scales with number of active sections.
+- for home page with 10 sections, up to 10 listing queries + populates.
+
+### repeated filter overlap
+- many sections can share same filters (city/category/isFeatured).
+- no deduping of filter evaluation within request.
+
+### cache behavior
+- page render response cache exists per slug/city.
+- cache is useful, but cold-start requests are expensive.
+
+## 5) Section-type specific forensic notes
+
+### hero_slider
+- typically image-heavy.
+- risk: no explicit maximum image counts in route validators.
+
+### listing_carousel
+- listing hydration depends on enrichSection listing query.
+- risk: duplicate cards across multiple carousels without dedupe rules.
+
+### city_banner
+- city override relies on cityId in filter or request param.
+- risk: ambiguity when both section filter city and request city exist.
+
+### subtype_showcase
+- enrichSection maps subtypeKey filter to subtypeId field directly.
+- potential semantic mismatch if subtypeKey is not ObjectId.
+
+### lucky_draw_widget
+- widget content appears CMS-driven but lucky draw state validity is in lucky draw module.
+- risk: stale campaign references in section content.
+
+### cta_banner/deal_strip/text_block/map_embed
+- content blocks are flexible.
+- risk: no strict schema per section type in route layer.
+
+## 6) Frontend consumption risks
+
+### 6.1 Contract instability
+- no generated typed schema from backend response.
+- frontend likely must branch by section.type and handle sparse fields.
+
+### 6.2 Overfetching
+- page render returns full section objects where frontend may need compact card fields only.
+
+### 6.3 Reconciliation complexity
+- frontend merges CMS config with listing payload and media variants; brittle if optional fields drift.
+
+## 7) Cache opportunities
+
+### Existing
+- pages.service caches rendered page key for 300 seconds.
+- cms.service caches page sections for 300 seconds.
+
+### Gaps
+- missing deterministic cache key by section filter fingerprint.
+- no two-tier cache strategy (raw sections cache + enriched section fragment cache).
+- invalidation is manual and broad.
+
+### Recommended
+- fragment cache by sectionId + cityId + filter hash.
+- dedupe listing queries by batching section filters where possible.
+
+## 8) N+1 and population risk details
+
+### Listing populate per section
+- populate city and subtype for each listing query.
+- repeated lookups for same city/subtype across sections.
+
+### Mitigation
+- prefetch city/subtype dictionaries for IDs seen in query result set.
+- map in memory instead of repeated populate.
+
+## 9) Response bloating forensic examples
+
+### Example high-load page
+- 12 sections
+- 8 listing sections with limit 10 each
+- 80 listing cards serialized
+- each card includes stats/tags/cover/pricing/city/subtype
+- payload likely >250KB depending image URL lengths and repeated keys
+
+### Mobile impact
+- high first render latency on moderate cellular networks.
+- high JSON parse and hydration cost on client.
+
+## 10) API contract upgrade proposal
+
+### Define two payload modes
+- compact: default for homepage and landing pages
+- detailed: explicit query parameter for deep detail
+
+### compact listing card schema
+- id, slug, title
+- coverImage mobile + card variant
+- price display fields
+- location label
+- feature badge
+
+### detailed listing payload
+- include stats, tags, full pricing map, extended media references
+
+## 11) City override forensic checks
+- request cityId currently used to override section filters where applicable.
+- no explicit precedence docs in API response.
+- recommend return metadata:
+- appliedCityId
+- source: request|section|default
+
+## 12) Subtype landing page forensic checks
+- subtype-specific pages rely on section filters and page metadata.
+- subtypeKey usage should be normalized to subtypeId lookup before query.
+
+## 13) Hero/banner/cards/media specifics
+
+### Hero banners
+- ensure desktop/mobile arrays paired by order index.
+- add fallback URLs generated server-side in response.
+
+### Listing cards
+- include deterministic badge and price labels from backend to reduce frontend branching.
+
+### CTA sections
+- validate URL safety and target values.
+
+### Lucky draw widgets
+- include campaign status and expiry countdown fields from backend to avoid extra calls.
+
+## 14) Test matrix for CMS payload hardening
+- page with no sections
+- page with mixed global + local sections
+- scheduled past/future/active sections
+- city override present/absent
+- sections with null mobileImages
+- duplicate section filters across rows
+- high section count cold cache
+
+## 15) Performance budget recommendations
+- home render P95: < 300 ms from cache, < 900 ms cold
+- payload size target: < 120KB compressed for primary home render
+- section listing query count target: <= 3 on cold render via batching
+
+## 16) Risk register
+- High: duplicate $or key bug in cms service scope/schedule query.
+- High: section-level fan-out for listing hydration.
+- Medium: subtypeKey to subtypeId mismatch risk.
+- Medium: non-typed section contracts and sparse payload drift.
+- Medium: broad invalidation strategy and cache miss storms.
+- Low: route-level validator absence for some page/cms writes.
+
+## 17) Safe remediation sequence
+1. Fix cms query composition with explicit $and and tests.
+2. Introduce compact payload mode and section-type serializers.
+3. Batch listing hydration across sections.
+4. Add section fragment cache.
+5. Add strict validators for cms/page mutations.
+6. Add response metadata for city override source and applied filters.
+
+## 18) Frontend migration impact
+- medium impact if compact mode becomes default.
+- low impact if added as opt-in first.
+- recommend phased rollout with feature flag and dual response mode.
+
+## 19) QA plan
+- golden-response snapshots for top pages.
+- schema contract tests per section type.
+- performance regression test with representative section counts.
+
+## 20) Final verdict
+- CMS and page system is close to production-grade architecture.
+- two correctness issues and several payload/performance inefficiencies prevent enterprise readiness.
+- with targeted refactor and contract hardening, this subsystem can scale safely.
+
+
+==============================
+SLOT_MONETIZATION_AUDIT.md
+==============================
+# SLOT_MONETIZATION_AUDIT
+
+## Scope
+- src/modules/plans
+- src/modules/subscriptions
+- src/modules/slots
+- src/modules/monetization
+- src/jobs/slotExpiryJob.js
+- src/jobs/subscriptionRenewalJob.js
+- src/shared/models/SubscriptionPlan.model.js
+- src/shared/models/VendorSubscription.model.js
+- src/shared/models/SlotInventory.model.js
+- src/shared/models/SlotAssignment.model.js
+
+## Revenue Engine Forensic Position
+- The monetization architecture is directionally correct.
+- Core risk lies in non-transactional assignment and lifecycle synchronization.
+- If unaddressed, this can produce revenue leakage and inventory drift.
+
+## 1) Plan system forensic
+
+### Plan model quality
+- plan keys and priority exist.
+- pricing matrix includes monthly/quarterly/halfYearly/annual.
+- limits and features support tier differentiation.
+
+### Gaps
+- no strict plan transition policy encoded (upgrade, downgrade, prorata rules).
+- no immutable plan snapshot versioning strategy beyond copied features/limits into subscription.
+
+## 2) Subscription lifecycle forensic
+
+### createSubscription
+- verifies plan and billing cycle amount.
+- blocks multiple active subscriptions.
+
+### activateSubscription
+- sets ACTIVE and paymentStatus paid.
+- computes endDate by billing cycle.
+- updates vendor currentPlan and activeSubscriptionId.
+
+### Risks
+- create/activate + vendor update are not wrapped in transaction.
+- failure between operations can leave inconsistent state.
+- cancellation does not explicitly revoke slots tied to subscription.
+
+## 3) Slot inventory and assignment forensic
+
+### Assignment flow
+- read inventory
+- check availableSlots > 0
+- create assignment
+- decrement inventory
+- set listing featured/premium flags
+
+### Critical race condition
+- two concurrent requests can both read availableSlots = 1 and both assign.
+- resulting availableSlots can go negative.
+
+### Business impact
+- over-sold premium inventory
+- ranking inconsistency
+- billing disputes
+
+## 4) Slot ranking forensic
+
+### Current ranking
+- sort by assignment.priority desc for featured listings.
+
+### Gaps
+- no deterministic tie-breakers
+- no recency/expiry-aware scoring
+- no explicit city/category/subtype fallback cascade if slot pool sparse
+
+## 5) Homepage priority forensic
+
+### Current behavior
+- slot-derived featured list returns listingIds by assignment priority.
+- listing.planPriority and featured flags are toggled in assignment/expiry logic.
+
+### Gaps
+- no transactional guarantee that listing flags and slot assignment state stay consistent under partial failure.
+
+## 6) City premium and subtype boosts forensic
+
+### Data model readiness
+- inventory and assignment include city/category/subtype IDs.
+
+### Gaps
+- no validator on assign payload to ensure assignment scope aligns with inventory scope.
+- possible to pass listing from unrelated city/category if not checked in service.
+
+## 7) Renewal and expiry forensic
+
+### subscriptionRenewalJob
+- sends reminder for subscriptions expiring in 7 days.
+- marks expired subscriptions and resets vendor plan to free.
+
+### slotExpiryJob
+- marks expired slot assignments
+- increments inventory availability
+- removes listing premium flags
+- emits notifications
+
+### Synchronization gap
+- subscription expiry and slot expiry are independent jobs.
+- slots linked to expired subscription may remain active until their own endDate.
+
+## 8) Slot history and auditability
+
+### Existing fields
+- assignedBy, notes, expiredAt, timestamps.
+
+### Gap
+- no explicit history array of lifecycle transitions.
+- no immutable event log for who changed what and why.
+
+## 9) Upgrade/downgrade risk
+
+### Current state
+- vendor.currentPlan updates with activated subscription.
+
+### Risk scenarios
+- downgrade while active slots at higher tier still assigned.
+- overlap of pending and active subscriptions with undefined precedence.
+
+## 10) Business correctness score
+- Plan definition correctness: 8.0
+- Subscription state correctness: 6.3
+- Slot inventory correctness under concurrency: 3.8
+- Ranking correctness: 6.0
+- Expiry correctness: 6.4
+- End-to-end revenue correctness: 5.7
+
+Overall business correctness score: 5.9 / 10
+
+## 11) Revenue leakage risks
+- Critical: double assignment on last slot due race condition.
+- High: inconsistent subscription and slot state after partial failures.
+- High: missing hard-check on subscription status/payment status in assign path.
+- Medium: orphaned assignments if vendor/subscription lifecycle changes are not cascaded.
+
+## 12) Expiry risks
+- Medium: multi-instance cron execution without lock can cause duplicate or conflicting updates.
+- Medium: reminderSentAt write can fail while email sent, causing resend anomalies.
+
+## 13) Race condition risks
+- Critical: assignSlot check-then-act race.
+- High: wishlist-like stat races not core monetization but affect perceived premium value metrics.
+- Medium: concurrent plan activation/cancellation edge cases.
+
+## 14) Indexing recommendations
+- VendorSubscription: add compound index { vendorId:1, status:1, endDate:1 }
+- SlotAssignment: add index { inventoryId:1, status:1, endDate:1 }
+- SlotAssignment: add index { subscriptionId:1, status:1 }
+- SlotInventory: add unique guard index for scope tuple where required by business policy
+
+## 15) Enforcement recommendations
+
+### 15.1 Transactional assign slot
+- use session transaction with conditional findOneAndUpdate for inventory decrement.
+- only create assignment if decrement succeeds.
+
+### 15.2 Subscription validity gate
+- assignSlot must enforce:
+- subscription exists
+- belongs to vendor
+- status ACTIVE
+- paymentStatus paid
+- subscription.endDate >= now
+
+### 15.3 Scope integrity checks
+- listing belongs to vendor
+- listing city/category/subtype compatible with inventory scope
+
+### 15.4 Idempotency
+- add idempotency key for assign operations to prevent duplicate charges on retries.
+
+## 16) Safe migration plan for slot integrity
+
+Phase A
+- add server-side validations and feature flag for transaction mode
+- dual-write audit log entries
+
+Phase B
+- enable transaction mode for low-traffic inventory types first
+
+Phase C
+- backfill integrity checker job to reconcile inventory counts vs assignments
+
+Phase D
+- enforce DB-level constraints where possible and alerting thresholds
+
+## 17) Monitoring recommendations
+- metrics:
+- slots.available negative count
+- assignments created per minute by slotType
+- assignment failures by reason
+- subscription-slot mismatch count
+
+- alerts:
+- any availableSlots < 0 critical page
+- assignment creation spikes > baseline
+- cron duration and failure ratios
+
+## 18) QA scenarios (mandatory)
+- concurrent assignment race (20 parallel requests on last slot)
+- assignment with expired subscription
+- assignment with unpaid subscription
+- slot expiry and subscription expiry overlap
+- listing mismatch with inventory city/category
+- downgrade with active premium slots
+
+## 19) Final forensic verdict
+- monetization data model is promising and expressive.
+- operational correctness for production finance-grade reliability is not yet achieved.
+- transactional integrity and lifecycle invariants must be implemented before scale.
+
+
+==============================
+CLOUDINARY_MEDIA_AUDIT.md
+==============================
+# CLOUDINARY_MEDIA_AUDIT
+
+## Scope
+- src/config/cloudinary.js
+- src/utils/cloudinaryHelper.js
+- src/modules/uploads/uploads.routes.js
+- src/shared/models/MediaAsset.model.js
+- media references in ListingBase, Vendor, CMSSection
+
+## 1) Media architecture forensic overview
+- Cloudinary v2 configured centrally.
+- helper encapsulates upload/delete and variant URL generation.
+- module stores MediaAsset with metadata and variant URLs.
+- listing/vendor/cms models also hold embedded image structures.
+
+## 2) Upload middleware forensic
+
+### Current pipeline
+- multer memory storage
+- file type check via mimetype startsWith image/
+- per-file size limit 10MB
+- route constructs base64 data URI
+- helper uploads to cloudinary
+- metadata persisted in MediaAsset
+
+### Risks
+- High: base64 conversion increases memory usage and CPU overhead.
+- High: memory storage for multi-file upload can stress node heap.
+- Medium: mimetype-only validation can be bypassed by crafted payloads.
+- Medium: no explicit image dimension policy.
+
+## 3) Transformation and variants forensic
+
+### Strengths
+- helper defines desktop/mobile/card/thumbnail/seo variants.
+- variant generation is deterministic and centralized.
+
+### Gaps
+- no explicit contract indicating which variant each frontend surface should consume.
+- no format/quality override by context (for example product vs hero).
+- no signed URL policy for sensitive assets if needed in future.
+
+## 4) Thumbnail and mobile variant behavior
+
+### Current
+- mobile variant fixed at 768x432 fill.
+- thumbnail 150x150 thumb gravity auto.
+
+### Considerations
+- for portrait-first content, fill may crop key visual details.
+- card and mobile may need context-specific gravity preferences.
+
+## 5) Alt text support forensic
+
+### Existing
+- altText is stored on MediaAsset and embedded image objects across models.
+
+### Gaps
+- no validation or minimum quality check for altText presence on key images.
+- no fallback generation strategy for missing alt text.
+
+## 6) Cleanup logic forensic
+
+### Existing
+- delete endpoint removes cloudinary publicId then soft-deletes MediaAsset.
+
+### Gaps
+- no periodic purge for long-term isDeleted assets.
+- no retry queue when cloudinary delete fails.
+- no orphan reconciliation for assets detached from listings/vendors.
+
+## 7) Stale image risk analysis
+
+### Stale scenarios
+- listing soft-deleted but media remains active.
+- vendor profile images replaced and old assets remain in cloudinary.
+- cms image updates without old asset cleanup.
+
+### Impact
+- cloudinary storage cost drift.
+- stale content URLs in clients/CDN caches.
+
+## 8) Duplicate asset risk analysis
+
+### Current state
+- no dedupe hash stored in MediaAsset.
+- same file can be uploaded repeatedly and billed repeatedly.
+
+### Recommendation
+- add content hash metadata at upload time.
+- optional dedupe mode by vendor/listing scope.
+
+## 9) Public payload shape forensic
+
+### Existing payloads
+- listing and vendor include embedded image objects.
+- uploads module returns MediaAsset records.
+- pages/cms can include arrays of desktop/mobile images.
+
+### Gaps
+- payload shape not normalized globally.
+- frontend may branch per module to resolve url/altText/variant fields.
+
+## 10) Security and abuse posture
+- upload limiter exists.
+- no malware scanning stage.
+- no strict extension whitelist beyond image mimetype.
+- no EXIF stripping policy discussed.
+
+## 11) Operational excellence findings
+- Medium: no upload observability metrics by context/role.
+- Medium: no failed-delete dead-letter queue.
+- Low: no explicit correlation id persisted on media operations.
+
+## 12) Model-level forensics
+
+### MediaAsset model strengths
+- references to vendor/listing/uploader
+- variant map and dimensions
+- role/type enums and indexes
+
+### Model gaps
+- no unique index on publicId.
+- no checksum/hash field for dedupe.
+- no lastAccessedAt for lifecycle management.
+
+## 13) Cloudinary helper forensic notes
+- helper catches and wraps errors with ApiError.internal.
+- deleteMultiple exists but not integrated in cleanup workflows.
+- variant generation uses cloudinary.url with transform config, good.
+
+## 14) Cost-risk estimate (qualitative)
+- without cleanup and dedupe, storage growth is monotonic and unbounded.
+- cost risk increases with suite rollout and high-volume gallery uploads.
+
+## 15) Priority hardening recommendations
+1. Replace base64 path with stream upload to cloudinary uploader stream.
+2. Add zod validator for upload context/role/altText/order/listingId.
+3. Add image dimension checks and optional compression pre-upload.
+4. Add MediaAsset unique index on publicId.
+5. Add daily/weekly cleanup job for stale isDeleted assets.
+6. Add orphan scanner for detached assets.
+7. Add content hash dedupe option.
+8. Add frontend variant contract documentation.
+
+## 16) Safe rollout plan
+
+Phase 1
+- add validators and publicId uniqueness.
+- add upload telemetry.
+
+Phase 2
+- introduce streaming upload under feature flag.
+- monitor memory and latency.
+
+Phase 3
+- run cleanup/orphan jobs in dry-run mode.
+- verify delete candidate count and false positives.
+
+Phase 4
+- enforce cleanup and dedupe policies.
+
+## 17) QA and regression plan
+- single and multi-file uploads under concurrency.
+- invalid mimetype and oversized images.
+- delete failures and retry behavior.
+- stale asset cleanup dry-run vs live run.
+- variant correctness checks in frontend pages.
+
+## 18) Final verdict
+- Cloudinary integration is functionally complete for core upload use.
+- enterprise-grade media lifecycle governance is partial.
+- memory safety, cleanup, and dedupe are highest priority gaps.
+
+
+==============================
+DB_SPEC_DIFF_REPORT.md
+==============================
+# DB_SPEC_DIFF_REPORT
+
+## Scope and Comparison Inputs
+
+### Requested comparison set
+- db-spec docs
+- model explanation docs
+- slot booking specs
+- extracted spec notes
+- FRD
+- vendor suite architecture
+
+### Artifacts actually found in workspace
+- BACKEND_IMPLEMENTATION_GUIDE.md
+- MODULE_FLOW_DOCUMENTATION.md
+- ARCHITECTURE_GAP_ANALYSIS.md
+- CURRENT_BACKEND_AUDIT.md
+- SAFE_REFACTOR_PLAN.md
+- executable schemas and modules under src/shared/models and src/modules
+
+### Constraint note
+- Explicit FRD/db-spec files were not found as standalone artifacts in this workspace scan.
+- This report compares available specification docs against executable code and schema behavior.
+
+## Method
+- compared doc claims to model fields/enums/indexes and service/route behavior.
+- tagged each mismatch as:
+- Missing in code
+- Extra in code
+- Enum drift
+- Reference drift
+- Normalization drift
+- Behavior drift
+
+---
+
+## 1) Global Schema Coverage Comparison
+
+### 1.1 Areas where code aligns with docs
+- modular domain structure with suites for hotels, tours, restaurants, shops, tribes, kids world, destinations.
+- shared ListingBase core with suite extension models exists.
+- monetization primitives (plans, subscriptions, slot inventory/assignment) exist.
+- CMS/page composition model exists.
+
+### 1.2 Major divergence themes
+- dynamic template enforcement is partial.
+- slot assignment transactional safety is missing.
+- validator coverage is much narrower than enterprise guide narrative suggests.
+- postman generation does not mirror claimed comprehensive route set.
+
+---
+
+## 2) Field-Level and Enum-Level Diffs
+
+## 2.1 Auth and user security fields
+
+### Doc expectation
+- secure password reset and verification flows.
+
+### Code status
+- User model includes passwordResetToken and expiry fields.
+- reset flow uses token equality query in repository path.
+
+### Diff
+- Behavior drift: reset token persistence strategy may not match secure hashed-token expectation.
+- Migration recommendation: hash reset tokens at write and compare hash at reset.
+
+## 2.2 Vendor plan and subscription fields
+
+### Doc expectation
+- plan upgrade and premium behavior consistency.
+
+### Code status
+- Vendor has currentPlan and activeSubscriptionId.
+- VendorSubscription has planKey, status, paymentStatus, dates.
+
+### Diff
+- Normalization drift: plan truth can diverge between vendor.currentPlan and active subscription.
+- Recommendation: derive currentPlan from active subscription projection or enforce invariant transactionally.
+
+## 2.3 Slot assignment fields
+
+### Doc expectation
+- reliable slot booking and expiry lifecycle.
+
+### Code status
+- SlotAssignment includes inventoryId, subscriptionId, start/end, status.
+- SlotInventory tracks total/assigned/available.
+
+### Diff
+- Behavior drift: assignment flow is not atomic and can violate available count.
+- Recommendation: transaction + conditional decrement query.
+
+## 2.4 CMS section schedule fields
+
+### Doc expectation
+- scheduled sections render correctly by date and scope.
+
+### Code status
+- CMSSection has scheduledFrom/scheduledTo and scope references.
+- cms service uses duplicate $or key bug in query object.
+
+### Diff
+- Behavior drift: scope/schedule composition can be incorrect.
+- Recommendation: rewrite query with explicit $and clauses.
+
+## 2.5 Analytics fields
+
+### Doc expectation
+- scalable event aggregation and dashboard insights.
+
+### Code status
+- AnalyticsEvent model has event-level fields and indexes.
+- daily aggregation job updates listing stats.
+
+### Diff
+- Missing field/policy: retention/TTL policy absent.
+- Behavior drift: aggregation idempotency marker absent.
+
+## 2.6 Template and dynamic fields
+
+### Doc expectation
+- dynamic forms engine and subtype-specific data governance.
+
+### Code status
+- ListingTemplate schema is rich.
+- listings module does not visibly enforce template fields during create/update.
+
+### Diff
+- Behavior drift: template schema exists but validation bridge is incomplete.
+
+---
+
+## 3) Reference Integrity Diff
+
+### 3.1 Listing extension references
+- Hotel, Restaurant, ShopCatalog, TribeExperience, KidsActivity, DestinationPackage reference listingId.
+- Missing strict orchestrator ensuring base listing and extension records are created/deleted atomically.
+
+### 3.2 Slot and listing references
+- assignment optionally references listingId.
+- no explicit guard that listing belongs to vendor in assignment service path.
+
+### 3.3 Inquiry references
+- inquiry references vendor/listing/user.
+- submit path accepts vendorId from payload with validator but not explicit anti-spoof ownership checks for authenticated users.
+
+### 3.4 Wishlist references
+- unique index on userId + listingId exists.
+- stat updates on listing are separate from wishlist write; consistency can drift under race.
+
+---
+
+## 4) Enum Drift and Semantics Check
+
+### 4.1 Verified stable enums
+- USER_ROLES, VENDOR_STATUS, LISTING_STATUS, SUBSCRIPTION_PLANS, SLOT_TYPES, SLOT_STATUS, SUBSCRIPTION_STATUS, CMS_SECTION_TYPES
+
+### 4.2 Potential semantic drift
+- auth validator role enum accepts user/vendorAdmin at registration; operational policy for self-promoted vendorAdmin may differ from enterprise governance.
+- docs mention verify-email route language; code uses verify-otp endpoint name.
+
+---
+
+## 5) Normalization and Denormalization Diff
+
+### 5.1 Intentional denormalization present
+- ListingBase carries aggregate counters and planPriority fields for fast reads.
+- Vendor carries currentPlan and stats summary.
+
+### 5.2 Problematic denormalization risks
+- counters updated in separate operations from source events can drift.
+- vendor currentPlan mirrored outside subscription source of truth.
+
+### 5.3 Recommended normalization stance
+- retain denormalized read fields for performance.
+- enforce write-time invariants with transactions and reconciliation jobs.
+
+---
+
+## 6) Slot Spec Diff Focus
+
+### Expected from slot booking specs
+- strict inventory correctness
+- deterministic assignment lifecycle
+- reliable expiry
+
+### Actual
+- inventory correctness under concurrent assign is not guaranteed.
+- expiry job works functionally but no distributed lock in multi-instance runtime.
+- assignment-service validation on subscription payment/state is not strict.
+
+### Risk
+- direct revenue leakage and dispute potential.
+
+---
+
+## 7) CMS Spec Diff Focus
+
+### Expected
+- city override, section scheduling, render composition correctness.
+
+### Actual
+- render pipeline exists and caches outputs.
+- cms section query bug affects scope/schedule combination.
+- no explicit response metadata indicating applied city override source.
+
+### Risk
+- incorrect page composition by locale/context.
+
+---
+
+## 8) Vendor Suite Architecture Diff
+
+### Expected
+- full operational suite behavior beyond CRUD (availability, booking, capacity).
+
+### Actual
+- strong CRUD scaffolding exists.
+- commerce operations (booking/order) are broadly absent across suites.
+
+### Risk
+- mismatch between product promise and executable capability.
+
+---
+
+## 9) Diff Register by Type
+
+### Missing in code (from available docs intent)
+- transaction-safe slot assignment
+- broad validator layer for write routes
+- dynamic template enforcement at listing write time
+- robust postman generator covering full API
+- analytics retention policy
+
+### Extra in code (not problematic)
+- rich enum surfaces and schema fields that exceed docs in some places (for example media variants, analytics metadata map)
+
+### Wrong/weak references
+- potential listing/vendor/inventory mismatch checks not enforced in slot assignment path
+
+### CMS mismatches
+- duplicate $or key logic bug in getSectionsByPage
+
+### Analytics mismatches
+- daily aggregation without idempotency key
+
+---
+
+## 10) Migration-Risk Annotated Recommendations
+
+1. Slot transactional hardening
+- risk level: Critical
+- migration complexity: Medium
+- frontend impact: Low
+- testing scope: High (concurrency)
+
+2. Reset token hashing migration
+- risk level: High
+- migration complexity: Medium
+- frontend impact: Low
+- testing scope: Medium
+
+3. CMS query composition fix
+- risk level: High
+- migration complexity: Low
+- frontend impact: Medium
+- testing scope: High (render snapshots)
+
+4. Validator expansion
+- risk level: High
+- migration complexity: Medium
+- frontend impact: Medium
+- testing scope: High
+
+5. Template-to-listing validation bridge
+- risk level: Medium
+- migration complexity: High
+- frontend impact: Medium
+- testing scope: High
+
+6. Analytics TTL and idempotency
+- risk level: Medium
+- migration complexity: Medium
+- frontend impact: Low
+- testing scope: Medium
+
+---
+
+## 11) Conclusion
+- With available docs, major architectural intent is visible in code.
+- The largest spec-to-code deltas are operational integrity and contract discipline, not model absence.
+- Closing transactional, validator, and lifecycle gaps will align implementation with enterprise expectations.
+
+
+==============================
+TECHNICAL_DEBT_REGISTER.md
+==============================
+# TECHNICAL_DEBT_REGISTER
+
+## Classification Model
+- Severity: Critical, High, Medium, Low
+- Type: Correctness, Security, Performance, Maintainability, Operability, Documentation
+- Risk horizon: Immediate, Near-term, Mid-term
+
+## Debt Register
+
+### TD-001
+- Title: Non-transactional slot assignment can oversubscribe inventory
+- Severity: Critical
+- Type: Correctness, Revenue
+- Location: src/modules/slots/slots.service.js
+- Symptom: check available -> create assignment -> decrement inventory sequence
+- Risk horizon: Immediate
+- Impact: revenue leakage, inventory drift, disputes
+- Recommended action: transactional assignment with conditional inventory decrement
+
+### TD-002
+- Title: Subscription-state and slot-state invariants not enforced together
+- Severity: High
+- Type: Correctness
+- Location: src/modules/subscriptions, src/modules/slots
+- Symptom: slot assignment does not strictly gate on active/paid subscription
+- Risk horizon: Immediate
+- Impact: unpaid premium exposure
+- Recommended action: strict assignment gate + lifecycle reconciliation
+
+### TD-003
+- Title: CMS query composition bug from duplicate key usage
+- Severity: High
+- Type: Correctness
+- Location: src/modules/cms/cms.service.js
+- Symptom: duplicate $or in object literal
+- Risk horizon: Immediate
+- Impact: wrong section retrieval
+- Recommended action: rewrite query with explicit $and
+
+### TD-004
+- Title: Route-heavy modules bypass service layer
+- Severity: High
+- Type: Maintainability
+- Location: search, uploads, inquiries, wishlist routes
+- Symptom: DB operations and business rules embedded in routes
+- Risk horizon: Near-term
+- Impact: low testability and high regression risk
+- Recommended action: extract controller/service layers
+
+### TD-005
+- Title: Sparse validator coverage across mutation endpoints
+- Severity: High
+- Type: Security, Correctness
+- Location: most modules except auth and inline inquiry schema
+- Symptom: missing zod/joi validation on many writes
+- Risk horizon: Immediate
+- Impact: malformed payload acceptance and inconsistent records
+- Recommended action: module-specific validator files and route integration
+
+### TD-006
+- Title: Reset token persistence strategy is weak
+- Severity: High
+- Type: Security
+- Location: auth repository/service + User model
+- Symptom: direct token equality lookup flow
+- Risk horizon: Immediate
+- Impact: token abuse if DB compromised
+- Recommended action: hash reset token and compare hash
+
+### TD-007
+- Title: Wishlist toggle race can skew counts
+- Severity: High
+- Type: Correctness
+- Location: src/modules/wishlist/wishlist.routes.js
+- Symptom: read-then-write toggle and separate stat update
+- Risk horizon: Near-term
+- Impact: counter drift and inconsistent UX
+- Recommended action: atomic toggle strategy with transaction or idempotent operation
+
+### TD-008
+- Title: Page render section fan-out causes query amplification
+- Severity: High
+- Type: Performance
+- Location: src/modules/pages/pages.service.js
+- Symptom: per-section listing queries and populates
+- Risk horizon: Near-term
+- Impact: cold-cache latency and DB load spikes
+- Recommended action: batching and fragment caching
+
+### TD-009
+- Title: Upload path uses in-memory base64 conversion
+- Severity: High
+- Type: Performance, Stability
+- Location: src/modules/uploads/uploads.routes.js
+- Symptom: memory amplification for multi-file upload
+- Risk horizon: Immediate
+- Impact: heap pressure and crash risk
+- Recommended action: streaming cloudinary upload
+
+### TD-010
+- Title: Cron jobs have no distributed lock strategy
+- Severity: High
+- Type: Operability
+- Location: src/bootstrap/registerCronJobs.js + jobs
+- Symptom: multi-node duplicate execution risk
+- Risk horizon: Near-term
+- Impact: double processing and state churn
+- Recommended action: lock keys with Redis NX/EX
+
+### TD-011
+- Title: Analytics event retention not bounded
+- Severity: Medium
+- Type: Performance
+- Location: src/shared/models/AnalyticsEvent.model.js
+- Symptom: no TTL index
+- Risk horizon: Mid-term
+- Impact: unbounded growth and slower analytics operations
+- Recommended action: TTL retention policy and archival strategy
+
+### TD-012
+- Title: Analytics aggregator lacks idempotency marker
+- Severity: Medium
+- Type: Correctness
+- Location: src/jobs/analyticsAggregatorJob.js
+- Symptom: rerun can double-increment stats
+- Risk horizon: Near-term
+- Impact: inflated metrics
+- Recommended action: per-day processed marker
+
+### TD-013
+- Title: Cache invalidation uses KEYS pattern
+- Severity: Medium
+- Type: Performance
+- Location: src/config/redis.js
+- Symptom: delPattern uses keys() then del()
+- Risk horizon: Mid-term
+- Impact: Redis blocking in larger keyspaces
+- Recommended action: SCAN-based invalidation
+
+### TD-014
+- Title: Vendor currentPlan duplicates subscription truth
+- Severity: Medium
+- Type: Data consistency
+- Location: Vendor model + subscriptions service
+- Symptom: denormalized plan and activeSubscription pointer can diverge
+- Risk horizon: Near-term
+- Impact: ranking and entitlement mistakes
+- Recommended action: invariant checks + reconciliation job
+
+### TD-015
+- Title: No strict scope validation in slot assignment
+- Severity: Medium
+- Type: Correctness
+- Location: slots.service assignSlot
+- Symptom: assignment does not fully verify listing matches inventory scope
+- Risk horizon: Near-term
+- Impact: wrong-slot placement
+- Recommended action: enforce city/category/subtype/listing ownership checks
+
+### TD-016
+- Title: Lucky draw randomness not audit-grade
+- Severity: Medium
+- Type: Fairness, Compliance
+- Location: luckyDraw service and job
+- Symptom: Math.random sort-based shuffle
+- Risk horizon: Mid-term
+- Impact: fairness challenge risk
+- Recommended action: cryptographic RNG + deterministic audit log
+
+### TD-017
+- Title: Upload module lacks strict role/context validation
+- Severity: Medium
+- Type: Correctness
+- Location: uploads.routes.js
+- Symptom: role/context accepted with fallback and minimal checks
+- Risk horizon: Near-term
+- Impact: inconsistent media classification
+- Recommended action: zod schema and enum-bound constraints
+
+### TD-018
+- Title: Postman generation and documentation drift
+- Severity: Medium
+- Type: Documentation, DX
+- Location: generatePostman.js, POSTMAN_USAGE_GUIDE.md
+- Symptom: generated collection is minimal vs guide describing full suite
+- Risk horizon: Near-term
+- Impact: testing confusion and stale QA flows
+- Recommended action: generate from swagger or source routes
+
+### TD-019
+- Title: Swagger lacks cookie auth and standard error schema
+- Severity: Medium
+- Type: Documentation, Integration
+- Location: src/config/swagger.js
+- Symptom: bearer only scheme
+- Risk horizon: Near-term
+- Impact: integration friction
+- Recommended action: add cookie auth and reusable error components
+
+### TD-020
+- Title: Template rules not enforced in listing writes
+- Severity: Medium
+- Type: Correctness
+- Location: templates + listings modules
+- Symptom: dynamicFields accepted without template-driven validator bridge
+- Risk horizon: Mid-term
+- Impact: inconsistent listing quality
+- Recommended action: generate runtime validators from template schema
+
+### TD-021
+- Title: Notification side effects are synchronous in hot paths
+- Severity: Medium
+- Type: Operability
+- Location: inquiries, jobs, luckyDraw flows
+- Symptom: email/notification in request path
+- Risk horizon: Near-term
+- Impact: latency and partial-failure coupling
+- Recommended action: queue with retries and dead-letter handling
+
+### TD-022
+- Title: Inconsistent module export style and formatting hygiene
+- Severity: Low
+- Type: Maintainability
+- Location: multiple modules
+- Symptom: mixed named/default patterns and minor style drift
+- Risk horizon: Mid-term
+- Impact: developer friction
+- Recommended action: standard export convention + lint rules
+
+### TD-023
+- Title: SEO route naming typo
+- Severity: Low
+- Type: Maintainability
+- Location: src/modules/seo/seo.routes.js
+- Symptom: getBySlugor
+- Risk horizon: Mid-term
+- Impact: minor readability debt
+- Recommended action: rename and keep alias for compatibility if needed
+
+### TD-024
+- Title: Missing explicit tests around concurrency critical paths
+- Severity: High
+- Type: Quality
+- Location: repository-wide
+- Symptom: no visible targeted race/concurrency test scaffolding
+- Risk horizon: Immediate
+- Impact: regressions escape to production
+- Recommended action: add concurrency test suite for slots/wishlist/uploads
+
+## Debt Clusters
+
+### Cluster A: Revenue-critical correctness debt
+- TD-001, TD-002, TD-015
+
+### Cluster B: Payload/performance debt
+- TD-008, TD-009, TD-013
+
+### Cluster C: Security/validation debt
+- TD-005, TD-006, TD-017
+
+### Cluster D: Observability/docs debt
+- TD-018, TD-019, TD-021
+
+## Remediation Priority Queue
+1. TD-001
+2. TD-002
+3. TD-005
+4. TD-006
+5. TD-004
+6. TD-008
+7. TD-009
+8. TD-024
+9. TD-003
+10. TD-013
+
+## Closure Criteria Template
+- defined owner
+- scoped ADR
+- feature flag strategy
+- unit + integration tests
+- production observability checks
+- rollback plan
+- signoff by backend + frontend + QA
+
+
+==============================
+SAFE_REFACTOR_EXECUTION_PLAN.md
+==============================
+# SAFE_REFACTOR_EXECUTION_PLAN
+
+## Objective
+Provide an implementation-grade, low-risk execution roadmap to remediate critical backend issues while preserving service continuity and frontend compatibility.
+
+## Planning Principles
+- No blind rewrites.
+- Feature-flag major behavior shifts.
+- Prefer additive migrations before destructive changes.
+- Sequence by risk containment first, then structural improvements.
+- Every change includes testing, observability, and rollback.
+
+## Workstreams
+- WS1: Revenue-critical correctness
+- WS2: Security and validation hardening
+- WS3: CMS/payload performance
+- WS4: Media pipeline safety
+- WS5: Docs/testing and operational readiness
+
+## Phase 0: Readiness (2-3 days)
+
+### Deliverables
+- establish branch strategy and release trains
+- define feature flags
+- baseline dashboards and alerts
+- freeze high-risk schema churn
+
+### Feature flags to create
+- FF_SLOT_TX_ASSIGN
+- FF_TEMPLATE_RUNTIME_VALIDATION
+- FF_PAGES_BATCH_ENRICH
+- FF_UPLOAD_STREAM_MODE
+- FF_NOTIF_QUEUE_MODE
+
+### Risk controls
+- canary deployment lane
+- one-click rollback per flag
+
+---
+
+## Phase 1: Critical Correctness Containment (Week 1)
+
+### Item 1: Transactional slot assignment
+- Scope: src/modules/slots/slots.service.js
+- Change:
+- conditional inventory decrement in transaction
+- only create assignment when decrement succeeds
+- enforce subscription + listing scope checks
+- Risk level: Critical
+- Migration complexity: Medium
+- Frontend impact: Low
+- Testing scope:
+- unit tests for happy/fail paths
+- concurrency test with parallel assign calls
+- observability check for availableSlots negative count
+- Rollout:
+- deploy behind FF_SLOT_TX_ASSIGN false
+- canary 10%
+- full enable after 24h clean metrics
+
+### Item 2: Subscription-slot invariant enforcement
+- Scope: slots + subscriptions services
+- Change:
+- strict gate on subscription status ACTIVE and paymentStatus paid
+- block assignment when invalid
+- Risk level: High
+- Migration complexity: Low-Medium
+- Frontend impact: Medium (error messages)
+- Testing scope: integration tests for unpaid/expired/cancelled scenarios
+- Rollout: with FF_SLOT_TX_ASSIGN
+
+### Item 3: CMS scope/schedule query fix
+- Scope: src/modules/cms/cms.service.js
+- Change:
+- replace duplicate-key query with explicit logical composition
+- Risk level: High
+- Migration complexity: Low
+- Frontend impact: Medium (rendered sections may change to correct set)
+- Testing scope:
+- snapshot tests for page composition
+- schedule matrix tests
+- Rollout:
+- no flag required if tests robust
+- optional fast rollback by revert
+
+---
+
+## Phase 2: Security + Validation Hardening (Week 2)
+
+### Item 4: Reset token hashing migration
+- Scope: auth repository/service + User model
+- Change:
+- store hashed reset tokens
+- lookup via token hash compare
+- one-time consumption guarantees
+- Risk level: High
+- Migration complexity: Medium
+- Frontend impact: Low
+- Testing scope:
+- reset flow e2e
+- invalid token behavior
+- replay attempt rejection
+- Rollout:
+- dual-read strategy for short migration window
+
+### Item 5: Validator expansion across mutation endpoints
+- Scope: modules without validators
+- Change:
+- add validator files per module
+- enforce validateBody on writes
+- Risk level: High
+- Migration complexity: Medium-High
+- Frontend impact: Medium (stricter payload acceptance)
+- Testing scope:
+- schema contract tests
+- negative payload tests
+- Rollout:
+- progressive module-by-module enablement
+- return actionable error messages for frontend
+
+### Item 6: Wishlist atomicity fix
+- Scope: src/modules/wishlist/wishlist.routes.js (plus extracted service)
+- Change:
+- atomic toggle or idempotent add/remove endpoints
+- counter floor guard
+- Risk level: High
+- Migration complexity: Medium
+- Frontend impact: Low-Medium
+- Testing scope: concurrent toggle tests
+
+---
+
+## Phase 3: Payload and Performance Refactor (Week 3)
+
+### Item 7: Batch section enrichment in page render
+- Scope: src/modules/pages/pages.service.js
+- Change:
+- batch listing hydration across sections
+- optional fragment caching
+- compact response mode
+- Risk level: High
+- Migration complexity: Medium
+- Frontend impact: Medium
+- Testing scope:
+- response equivalence tests
+- P95 latency tests
+- Rollout:
+- FF_PAGES_BATCH_ENRICH enabled for selected pages first
+
+### Item 8: Redis invalidation hardening
+- Scope: src/config/redis.js
+- Change:
+- replace KEYS with SCAN pattern deletion utility
+- Risk level: Medium
+- Migration complexity: Low
+- Frontend impact: None
+- Testing scope: cache invalidation integration tests
+
+### Item 9: Analytics retention + idempotency
+- Scope: AnalyticsEvent model + aggregator job
+- Change:
+- add TTL index policy
+- add idempotency marker for aggregation day
+- Risk level: Medium
+- Migration complexity: Medium
+- Frontend impact: Low
+- Testing scope: rerun safety and retention behavior tests
+
+---
+
+## Phase 4: Media Pipeline Hardening (Week 4)
+
+### Item 10: Stream upload mode
+- Scope: uploads routes + cloudinary helper
+- Change:
+- shift from base64 memory path to stream upload
+- add image dimension and role/context validators
+- Risk level: High
+- Migration complexity: Medium
+- Frontend impact: Low
+- Testing scope:
+- throughput and memory profiling
+- multi-file upload stress tests
+- Rollout:
+- FF_UPLOAD_STREAM_MODE canary then global
+
+### Item 11: Stale/orphan cleanup jobs
+- Scope: new media cleanup job + safe dry-run mode
+- Change:
+- orphan detection
+- grace-period deletion
+- audit logs for deleted assets
+- Risk level: Medium
+- Migration complexity: Medium
+- Frontend impact: Low (if grace-period respected)
+- Testing scope: dry-run verification and spot checks
+
+---
+
+## Phase 5: Architecture Cleanup (Week 5)
+
+### Item 12: Route-heavy module extraction
+- Scope: search, uploads, inquiries, wishlist
+- Change:
+- extract service/controller layers
+- unify error and telemetry behavior
+- Risk level: Medium
+- Migration complexity: Medium
+- Frontend impact: None
+- Testing scope: endpoint parity tests
+
+### Item 13: Template runtime validation bridge
+- Scope: listings + templates
+- Change:
+- build runtime validator from ListingTemplate definitions
+- enforce on listing create/update/publish
+- Risk level: Medium
+- Migration complexity: High
+- Frontend impact: Medium
+- Testing scope: schema compatibility tests per subtype
+
+---
+
+## Phase 6: Docs, QA, and DevOps Alignment (Week 6)
+
+### Item 14: Swagger and Postman alignment
+- Scope: src/config/swagger.js + generation scripts
+- Change:
+- add cookie auth scheme
+- add standard error schema
+- generate postman collection from source of truth
+- Risk level: Medium
+- Migration complexity: Medium
+- Frontend impact: Positive
+- Testing scope: docs-contract CI checks
+
+### Item 15: Test suite upgrades
+- Scope: repository-wide
+- Change:
+- add concurrency tests
+- add golden payload snapshots for pages/CMS
+- add cron job integration tests with lock mocks
+- Risk level: High if not done
+- Migration complexity: Medium
+- Frontend impact: None
+
+---
+
+## Migration and Data Safety Details
+
+### Schema migration strategy
+- additive fields first
+- backfill with idempotent scripts
+- verify read-path compatibility
+- remove deprecated fields after two release cycles
+
+### Rollback policy
+- each phase deployable independently
+- feature flags disable new behavior fast
+- DB migrations include down/compensating scripts when feasible
+
+### Observability requirements per release
+- dashboards for slots, subscriptions, cms render latency, upload memory, cron status
+- alert thresholds pre-defined before enabling flags
+
+## Frontend Impact Matrix
+- Slot assignment hardening: low, mostly error code behavior
+- Validator expansion: medium, may require payload fixes in forms
+- CMS batching/compact mode: medium, contract adaptation required
+- Upload stream mode: low, endpoint semantics unchanged
+- Template validation bridge: medium-high for vendor form clients
+
+## Testing Scope Matrix
+- Unit tests: all changed services
+- Integration tests: route + DB correctness
+- Concurrency tests: slots, wishlist, uploads
+- Contract tests: page render and CMS sections
+- Performance tests: home render, search, uploads
+- Soak tests: cron jobs and cache churn
+
+## Release Order Summary
+1. Slot transaction + invariant checks
+2. CMS query bug fix
+3. Reset token hardening
+4. Validator expansion wave
+5. Wishlist atomicity
+6. Pages batching and cache improvements
+7. Analytics TTL/idempotency
+8. Upload streaming + cleanup
+9. Route extraction and template runtime enforcement
+10. Swagger/Postman contract alignment + test gates
+
+## Governance and Ownership
+- Backend lead: WS1, WS2
+- Platform/devops: WS3 cache + cron lock infra
+- Media team: WS4
+- QA lead: cross-phase test plans and release signoff
+- Frontend lead: payload contract adoption and validation-error UX handling
+
+## Exit Criteria
+- zero critical findings open from this audit
+- zero known negative inventory occurrences over 14 days
+- no CMS render mismatch regressions in golden snapshots
+- upload memory profile stable under stress threshold
+- API docs and postman synchronized with deployed routes
+
+
+

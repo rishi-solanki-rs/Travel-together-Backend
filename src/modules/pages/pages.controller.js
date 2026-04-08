@@ -3,7 +3,10 @@ import ApiResponse from '../../utils/ApiResponse.js';
 import asyncHandler from '../../utils/asyncHandler.js';
 
 const render = asyncHandler(async (req, res) => {
-  const payload = await pagesService.renderPage(req.params.slug, req.query.cityId);
+  const payload = await pagesService.renderPage(req.params.slug, {
+    cityId: req.query.cityId,
+    payloadMode: req.query.payloadMode || req.query.mode,
+  });
   ApiResponse.success(res, 'Page rendered', payload);
 });
 const getAll = asyncHandler(async (req, res) => { const pages = await pagesService.getAllPages(); ApiResponse.success(res, 'Pages fetched', pages); });

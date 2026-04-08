@@ -26,6 +26,9 @@ const vendorSubscriptionSchema = new mongoose.Schema(
     renewalCount: { type: Number, default: 0 },
     cancelledAt: Date,
     cancellationReason: String,
+    gracePeriodEndsAt: Date,
+    gracePeriodUntil: Date,
+    replacedBySubscriptionId: { type: mongoose.Schema.Types.ObjectId, ref: 'VendorSubscription', default: null },
 
     features: [{
       key: String,
@@ -42,6 +45,21 @@ const vendorSubscriptionSchema = new mongoose.Schema(
 
     autoRenew: { type: Boolean, default: true },
     reminderSentAt: Date,
+    renewalHistory: [{
+      validFrom: { type: Date, default: null },
+      validTo: { type: Date, default: null },
+      amount: { type: Number, default: 0 },
+      renewedAt: { type: Date, default: Date.now },
+      renewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      notes: { type: String, default: null },
+    }],
+    planChangeHistory: [{
+      fromPlanId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPlan', default: null },
+      toPlanId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPlan', default: null },
+      changedAt: { type: Date, default: Date.now },
+      changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      notes: { type: String, default: null },
+    }],
 
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     approvedAt: Date,
@@ -51,6 +69,7 @@ const vendorSubscriptionSchema = new mongoose.Schema(
 );
 
 vendorSubscriptionSchema.index({ vendorId: 1, status: 1 });
+vendorSubscriptionSchema.index({ vendorId: 1, status: 1, endDate: 1 });
 vendorSubscriptionSchema.index({ endDate: 1, status: 1 });
 vendorSubscriptionSchema.index({ planKey: 1 });
 vendorSubscriptionSchema.index({ paymentStatus: 1 });

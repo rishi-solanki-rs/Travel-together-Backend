@@ -5,33 +5,34 @@ import Vendor from '../../shared/models/Vendor.model.js';
 import Notification from '../../shared/models/Notification.model.js';
 import { optionalAuthenticate, authenticate } from '../../middlewares/authenticate.js';
 import { isAdmin, isVendorAdmin } from '../../middlewares/authorize.js';
-import { validateBody } from '../../middlewares/validate.js';
+import validateRequest from '../../middlewares/validateRequest.js';
 import ApiResponse from '../../utils/ApiResponse.js';
 import ApiError from '../../utils/ApiError.js';
 import asyncHandler from '../../utils/asyncHandler.js';
 import { parsePaginationQuery, buildPaginationMeta } from '../../utils/pagination.js';
 import { INQUIRY_STATUS, NOTIFICATION_TYPES } from '../../shared/constants/index.js';
-import { z } from 'zod';
 import { sendEmail, emailTemplates } from '../../utils/emailHelper.js';
+import { inquiryBodySchema, inquiryResponseParamsSchema, inquiryResponseBodySchema } from './inquiries.validator.js';
+import inquiryLifecycleRoutes from './inquiryLifecycle.routes.js';
 
 const router = express.Router();
 
-const inquirySchema = z.object({
-  vendorId: z.string().min(1),
-  listingId: z.string().optional(),
-  name: z.string().min(2).max(100),
-  email: z.string().email(),
-  phone: z.string().optional(),
-  message: z.string().min(10).max(2000),
-  preferredDate: z.string().optional(),
-  groupSize: z.number().optional(),
-  budget: z.string().optional(),
-});
-
 const submitInquiry = asyncHandler(async (req, res) => {
+  const listing = req.body.listingId
+    ? await ListingBase.findById(req.body.listingId).select('title cityId areaId category')
+    : null;
+
   const inquiry = await Inquiry.create({
     ...req.body,
     userId: req.user?.id || null,
+    cityId: req.body.cityId || listing?.cityId || null,
+    areaId: req.body.areaId || listing?.areaId || null,
+    domain: req.body.domain || listing?.category || '',
+    sourceWidget: req.body.sourceWidget || '',
+    sourcePage: req.body.sourcePage || '',
+    preferredVisitTime: req.body.preferredVisitTime || '',
+    seasonalInterest: req.body.seasonalInterest || '',
+    tags: Array.isArray(req.body.tags) ? req.body.tags.map((tag) => String(tag).toLowerCase()) : [],
     ipAddress: req.ip,
     userAgent: req.get('User-Agent'),
   });
@@ -42,7 +43,9 @@ const submitInquiry = asyncHandler(async (req, res) => {
 
   const vendor = await Vendor.findById(req.body.vendorId).populate('ownerId', 'email name');
   if (vendor?.ownerId?.email) {
-    const listingName = req.body.listingId ? (await ListingBase.findById(req.body.listingId).select('title'))?.title : vendor.businessName;
+    const listingName = req.body.listingId
+      ? (listing?.title || (await ListingBase.findById(req.body.listingId).select('title'))?.title)
+      : vendor.businessName;
     const { subject, html } = emailTemplates.inquiryReceived(vendor.businessName, listingName || 'your listing');
     await sendEmail({ to: vendor.ownerId.email, subject, html }).catch(() => {});
 
@@ -82,8 +85,9 @@ const respondToInquiry = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'Response sent', inquiry);
 });
 
-router.post('/', optionalAuthenticate, validateBody(inquirySchema), submitInquiry);
+router.post('/', optionalAuthenticate, validateRequest({ body: inquiryBodySchema }), submitInquiry);
 router.get('/my', authenticate, isVendorAdmin, getMyInquiries);
-router.patch('/:id/respond', authenticate, isVendorAdmin, respondToInquiry);
+router.patch('/:id/respond', authenticate, isVendorAdmin, validateRequest({ params: inquiryResponseParamsSchema, body: inquiryResponseBodySchema }), respondToInquiry);
+router.use('/', inquiryLifecycleRoutes);
 
 export default router;

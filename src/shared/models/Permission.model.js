@@ -13,6 +13,5 @@ const permissionSchema = new mongoose.Schema(
 );
 
 permissionSchema.index({ resource: 1, action: 1 });
-permissionSchema.index({ name: 1 });
 
 export default mongoose.model('Permission', permissionSchema);

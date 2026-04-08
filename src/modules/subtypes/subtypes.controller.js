@@ -2,6 +2,11 @@ import * as subtypesService from './subtypes.service.js';
 import ApiResponse from '../../utils/ApiResponse.js';
 import asyncHandler from '../../utils/asyncHandler.js';
 
+const getAll = asyncHandler(async (req, res) => {
+  const subtypes = await subtypesService.getAll(req.query);
+  ApiResponse.success(res, 'Subtypes fetched', subtypes);
+});
+
 const getByCategory = asyncHandler(async (req, res) => {
   const subtypes = await subtypesService.getByCategory(req.params.categoryId, req.query);
   ApiResponse.success(res, 'Subtypes fetched', subtypes);
@@ -22,9 +27,14 @@ const update = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'Subtype updated', subtype);
 });
 
+const updateFilterConfig = asyncHandler(async (req, res) => {
+  const subtype = await subtypesService.updateFilterConfig(req.params.id, req.body.searchFilters || []);
+  ApiResponse.success(res, 'Subtype filter config updated', subtype);
+});
+
 const remove = asyncHandler(async (req, res) => {
   await subtypesService.remove(req.params.id);
   ApiResponse.noContent(res);
 });
 
-export { getByCategory, getBySlug, create, update, remove };
+export { getAll, getByCategory, getBySlug, create, update, updateFilterConfig, remove };

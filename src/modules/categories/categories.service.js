@@ -1,4 +1,5 @@
 import Category from '../../shared/models/Category.model.js';
+import ListingBase from '../../shared/models/ListingBase.model.js';
 import ApiError from '../../utils/ApiError.js';
 import { generateUniqueSlug } from '../../utils/slugify.js';
 import { cache } from '../../config/redis.js';
@@ -44,4 +45,39 @@ const deleteCategory = async (id) => {
   await cache.del(CACHE_KEY);
 };
 
-export { getAllCategories, getCategoryBySlug, createCategory, updateCategory, deleteCategory };
+const getTaxonomyInsights = async () => {
+  const [categoryCounts, subcategoryCounts, cityLabelPerformance] = await Promise.all([
+    ListingBase.aggregate([
+      { $match: { isDeleted: false } },
+      { $group: { _id: '$category', totalListings: { $sum: 1 }, totalInquiries: { $sum: '$stats.inquiryCount' }, totalViews: { $sum: '$stats.views' } } },
+      { $sort: { totalListings: -1 } },
+    ]),
+    ListingBase.aggregate([
+      { $match: { isDeleted: false, subtypeId: { $ne: null } } },
+      { $group: { _id: '$subtypeId', totalListings: { $sum: 1 }, totalViews: { $sum: '$stats.views' } } },
+      { $sort: { totalViews: -1 } },
+      { $limit: 20 },
+    ]),
+    ListingBase.aggregate([
+      { $match: { isDeleted: false, cityId: { $ne: null } } },
+      {
+        $group: {
+          _id: '$cityId',
+          total: { $sum: 1 },
+          sponsored: { $sum: { $cond: ['$labels.sponsored', 1, 0] } },
+          popularChoice: { $sum: { $cond: ['$labels.popularChoice', 1, 0] } },
+          superSaver: { $sum: { $cond: ['$labels.superSaver', 1, 0] } },
+        },
+      },
+      { $sort: { total: -1 } },
+    ]),
+  ]);
+
+  return {
+    categoryCounts,
+    mostSearchedSubcategories: subcategoryCounts,
+    cityFilterPerformance: cityLabelPerformance,
+  };
+};
+
+export { getAllCategories, getCategoryBySlug, createCategory, updateCategory, deleteCategory, getTaxonomyInsights };

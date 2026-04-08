@@ -7,15 +7,15 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node src/seeders/index.js",
-    "test": "jest --runInBand --forceExit",
-    "test:watch": "jest --watch",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand --forceExit",
+    "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
     "swagger:gen": "node src/bootstrap/registerSwagger.js",
     "lint": "eslint src/ --ext .js"
   },
   "dependencies": {
     "axios": "^1.6.7",
     "bcryptjs": "^2.4.3",
-    "cloudinary": "^2.5.1",
+    "cloudinary": "^1.41.3",
     "compression": "^1.7.4",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
@@ -65,8 +65,6 @@
   "type": "module",
   "jest": {
     "transform": {},
-    "extensionsToTreatAsEsm": [
-      ".js"
-    ]
+    "testEnvironment": "node"
   }
 }

@@ -30,6 +30,16 @@ const generateTokenPair = (payload) => ({
   refreshToken: signRefreshToken(payload),
 });
 
+export {
+  signAccessToken,
+  signRefreshToken,
+  verifyAccessToken,
+  verifyRefreshToken,
+  signPasswordResetToken,
+  verifyPasswordResetToken,
+  generateTokenPair,
+};
+
 export default {
   signAccessToken,
   signRefreshToken,

@@ -5,6 +5,7 @@ import categoriesRoutes from '../modules/categories/categories.routes.js';
 import subtypesRoutes from '../modules/subtypes/subtypes.routes.js';
 import templatesRoutes from '../modules/templates/templates.routes.js';
 import citiesRoutes from '../modules/cities/cities.routes.js';
+import areasRoutes from '../modules/areas/areas.routes.js';
 import listingsRoutes from '../modules/listings/listings.routes.js';
 import hotelsRoutes from '../modules/hotels/hotels.routes.js';
 import thingsToDoRoutes from '../modules/thingsToDo/thingsToDo.routes.js';
@@ -24,10 +25,16 @@ import analyticsRoutes from '../modules/analytics/analytics.routes.js';
 import reportsRoutes from '../modules/reports/reports.routes.js';
 import uploadsRoutes from '../modules/uploads/uploads.routes.js';
 import searchRoutes from '../modules/search/search.routes.js';
+import discoveryRoutes from '../modules/discovery/discovery.routes.js';
+import collectionsRoutes from '../modules/collections/collections.routes.js';
+import editorialRoutes from '../modules/editorial/editorial.routes.js';
 import notificationsRoutes from '../modules/notifications/notifications.routes.js';
 import wishlistRoutes from '../modules/wishlist/wishlist.routes.js';
 import inquiriesRoutes from '../modules/inquiries/inquiries.routes.js';
 import seoRoutes from '../modules/seo/seo.routes.js';
+import securityRoutes from '../modules/security/security.routes.js';
+import systemRoutes from '../modules/system/system.routes.js';
+import bookingHubRoutes from '../modules/bookingHub/bookingHub.routes.js';
 import env from '../config/env.js';
 
 const registerRoutes = (app) => {
@@ -40,6 +47,7 @@ const registerRoutes = (app) => {
   app.use(`${base}/subtypes`, subtypesRoutes);
   app.use(`${base}/templates`, templatesRoutes);
   app.use(`${base}/cities`, citiesRoutes);
+  app.use(`${base}/areas`, areasRoutes);
   app.use(`${base}/listings`, listingsRoutes);
   app.use(`${base}/hotels`, hotelsRoutes);
   app.use(`${base}/things-to-do`, thingsToDoRoutes);
@@ -59,10 +67,16 @@ const registerRoutes = (app) => {
   app.use(`${base}/reports`, reportsRoutes);
   app.use(`${base}/uploads`, uploadsRoutes);
   app.use(`${base}/search`, searchRoutes);
+  app.use(`${base}/discovery`, discoveryRoutes);
+  app.use(`${base}/collections`, collectionsRoutes);
+  app.use(`${base}/editorial`, editorialRoutes);
   app.use(`${base}/notifications`, notificationsRoutes);
   app.use(`${base}/wishlist`, wishlistRoutes);
   app.use(`${base}/inquiries`, inquiriesRoutes);
   app.use(`${base}/seo`, seoRoutes);
+  app.use(`${base}/security`, securityRoutes);
+  app.use(`${base}/system`, systemRoutes);
+  app.use(`${base}`, bookingHubRoutes);
 };
 
 export default registerRoutes;

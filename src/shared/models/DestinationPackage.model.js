@@ -87,7 +87,6 @@ const destinationPackageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-destinationPackageSchema.index({ listingId: 1 });
 destinationPackageSchema.index({ vendorId: 1 });
 destinationPackageSchema.index({ packageType: 1 });
 destinationPackageSchema.index({ 'pricing.perPersonDouble': 1 });

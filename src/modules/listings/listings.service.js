@@ -5,17 +5,43 @@ import { generateUniqueSlug } from '../../utils/slugify.js';
 import { parsePaginationQuery, buildPaginationMeta, buildSortQuery } from '../../utils/pagination.js';
 import { LISTING_STATUS, PLAN_PRIORITY } from '../../shared/constants/index.js';
 
+const normalizeDiscoveryPayload = (data = {}) => {
+  const payload = { ...data };
+
+  if (payload.subCategoryId && !payload.subtypeId) payload.subtypeId = payload.subCategoryId;
+  if (Array.isArray(payload.subCategoryIds) && !payload.subCategoryIds.length && payload.subtypeId) {
+    payload.subCategoryIds = [payload.subtypeId];
+  }
+  if (!Array.isArray(payload.subCategoryIds) && payload.subtypeId) {
+    payload.subCategoryIds = [payload.subtypeId];
+  }
+  if (!Array.isArray(payload.categoryIds) && payload.categoryId) {
+    payload.categoryIds = [payload.categoryId];
+  }
+  if (Array.isArray(payload.nearbyLandmarks)) {
+    payload.nearbyLandmarks = payload.nearbyLandmarks
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+  if (Array.isArray(payload.tags)) {
+    payload.tags = payload.tags.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean);
+  }
+
+  return payload;
+};
+
 const createListing = async (vendorId, data) => {
   const vendor = await Vendor.findOne({ _id: vendorId, isDeleted: false });
   if (!vendor) throw ApiError.notFound('Vendor not found');
 
   const slug = await generateUniqueSlug(data.title, ListingBase);
+  const normalized = normalizeDiscoveryPayload(data);
   const listing = await ListingBase.create({
-    ...data,
+    ...normalized,
     vendorId,
     slug,
     category: vendor.category,
-    cityId: data.cityId || vendor.cityId,
+    cityId: normalized.cityId || vendor.cityId,
     planPriority: PLAN_PRIORITY[vendor.currentPlan] || 0,
   });
 
@@ -28,7 +54,8 @@ const getListingBySlug = async (slug) => {
     .populate('vendorId', 'businessName slug contactInfo logo address socialLinks')
     .populate('categoryId', 'name key')
     .populate('subtypeId', 'name key')
-    .populate('cityId', 'name state');
+    .populate('cityId', 'name state')
+    .populate('areaId', 'name zoneType nearbyLandmarks');
   if (!listing) throw ApiError.notFound('Listing not found');
 
   await ListingBase.findByIdAndUpdate(listing._id, { $inc: { 'stats.views': 1 } });
@@ -40,7 +67,8 @@ const getListingById = async (id) => {
     .populate('vendorId', 'businessName slug')
     .populate('categoryId', 'name key')
     .populate('subtypeId', 'name key')
-    .populate('cityId', 'name state');
+    .populate('cityId', 'name state')
+    .populate('areaId', 'name zoneType nearbyLandmarks');
   if (!listing) throw ApiError.notFound('Listing not found');
   return listing;
 };
@@ -50,11 +78,17 @@ const getVendorListings = async (vendorId, query = {}) => {
   const filter = { vendorId, isDeleted: false };
   if (query.status) filter.status = query.status;
   if (query.category) filter.category = query.category;
+  if (query.cityId) filter.cityId = query.cityId;
+  if (query.areaId) filter.areaId = query.areaId;
+  if (query.categoryId) filter.categoryIds = query.categoryId;
+  if (query.subCategoryId) filter.subCategoryIds = query.subCategoryId;
+  if (query.vendorType) filter.vendorType = query.vendorType;
+  if (query.discoveryType) filter.discoveryType = query.discoveryType;
 
   const sort = buildSortQuery(query.sortBy || 'createdAt', query.sortOrder || 'desc');
   const [listings, total] = await Promise.all([
     ListingBase.find(filter).sort(sort).skip(skip).limit(perPage)
-      .populate('categoryId', 'name').populate('subtypeId', 'name').populate('cityId', 'name'),
+      .populate('categoryId', 'name').populate('subtypeId', 'name').populate('cityId', 'name').populate('areaId', 'name zoneType'),
     ListingBase.countDocuments(filter),
   ]);
 
@@ -65,15 +99,17 @@ const updateListing = async (id, vendorId, data) => {
   const listing = await ListingBase.findOne({ _id: id, vendorId, isDeleted: false });
   if (!listing) throw ApiError.notFound('Listing not found or unauthorized');
 
-  if (data.title && data.title !== listing.title) {
-    data.slug = await generateUniqueSlug(data.title, ListingBase, 'slug', id);
+  const normalized = normalizeDiscoveryPayload(data);
+
+  if (normalized.title && normalized.title !== listing.title) {
+    normalized.slug = await generateUniqueSlug(normalized.title, ListingBase, 'slug', id);
   }
 
-  if (listing.status !== LISTING_STATUS.DRAFT && data.status !== listing.status) {
-    data.status = LISTING_STATUS.PENDING_REVIEW;
+  if (listing.status !== LISTING_STATUS.DRAFT && normalized.status !== listing.status) {
+    normalized.status = LISTING_STATUS.PENDING_REVIEW;
   }
 
-  return ListingBase.findByIdAndUpdate(id, { ...data, $inc: { version: 1 } }, { new: true, runValidators: true });
+  return ListingBase.findByIdAndUpdate(id, { ...normalized, $inc: { version: 1 } }, { new: true, runValidators: true });
 };
 
 const submitForReview = async (id, vendorId) => {
@@ -112,13 +148,18 @@ const getAllListings = async (query = {}) => {
   if (query.status) filter.status = query.status;
   if (query.category) filter.category = query.category;
   if (query.cityId) filter.cityId = query.cityId;
+  if (query.areaId) filter.areaId = query.areaId;
   if (query.vendorId) filter.vendorId = query.vendorId;
   if (query.isFeatured) filter.isFeatured = query.isFeatured === 'true';
+  if (query.subCategoryId) filter.subCategoryIds = query.subCategoryId;
+  if (query.categoryId) filter.categoryIds = query.categoryId;
+  if (query.vendorType) filter.vendorType = query.vendorType;
+  if (query.discoveryType) filter.discoveryType = query.discoveryType;
 
   const sort = buildSortQuery(query.sortBy || 'createdAt', query.sortOrder || 'desc');
   const [listings, total] = await Promise.all([
     ListingBase.find(filter).sort(sort).skip(skip).limit(perPage)
-      .populate('vendorId', 'businessName').populate('categoryId', 'name').populate('cityId', 'name'),
+      .populate('vendorId', 'businessName').populate('categoryId', 'name').populate('cityId', 'name').populate('areaId', 'name zoneType'),
     ListingBase.countDocuments(filter),
   ]);
 

@@ -13,6 +13,7 @@ const listingBaseSchema = new mongoose.Schema(
     subtypeId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubType' },
     templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'ListingTemplate' },
     cityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City' },
+    areaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Area' },
 
     category: { type: String, enum: Object.values(CATEGORIES), required: true },
     status: { type: String, enum: Object.values(LISTING_STATUS), default: LISTING_STATUS.DRAFT },
@@ -38,6 +39,42 @@ const listingBaseSchema = new mongoose.Schema(
     galleryImages: [{ publicId: String, url: String, altText: String, order: { type: Number, default: 0 }, role: String }],
 
     tags: [{ type: String, lowercase: true }],
+    categoryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Category' }],
+    subCategoryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'SubType' }],
+    nearbyLandmarks: [{ type: String, lowercase: true, trim: true }],
+    vendorType: {
+      type: String,
+      enum: [
+        'commercial_outlet',
+        'mall',
+        'market',
+        'artisan_store',
+        'ngo',
+        'boutique',
+        'restaurant',
+        'cafe',
+        'bar_pub',
+        'street_food',
+        'hotel_restaurant',
+        'souvenir_shop',
+        'other',
+      ],
+      default: 'other',
+    },
+    discoveryType: {
+      type: String,
+      enum: ['nearby', 'popular_choice', 'super_saver', 'sponsored', 'featured', 'just_in', 'iconic_collection'],
+      default: 'nearby',
+    },
+    areaCluster: { type: String, trim: true, default: '' },
+    labels: {
+      chain: { type: Boolean, default: false },
+      sponsored: { type: Boolean, default: false },
+      superSaver: { type: Boolean, default: false },
+      popularChoice: { type: Boolean, default: false },
+      featured: { type: Boolean, default: false },
+      openNow: { type: Boolean, default: false },
+    },
     highlights: [String],
     inclusions: [String],
     exclusions: [String],
@@ -98,6 +135,11 @@ listingBaseSchema.index({ vendorId: 1, status: 1 });
 listingBaseSchema.index({ categoryId: 1, status: 1, isActive: 1 });
 listingBaseSchema.index({ subtypeId: 1, status: 1 });
 listingBaseSchema.index({ cityId: 1, category: 1, status: 1 });
+listingBaseSchema.index({ cityId: 1, areaId: 1, category: 1, status: 1 });
+listingBaseSchema.index({ categoryIds: 1, subCategoryIds: 1 });
+listingBaseSchema.index({ nearbyLandmarks: 1 });
+listingBaseSchema.index({ vendorType: 1, discoveryType: 1 });
+listingBaseSchema.index({ 'labels.sponsored': 1, 'labels.popularChoice': 1, 'labels.superSaver': 1, 'labels.featured': 1 });
 listingBaseSchema.index({ slug: 1 });
 listingBaseSchema.index({ geoLocation: '2dsphere' });
 listingBaseSchema.index({ isDeleted: 1, isActive: 1 });

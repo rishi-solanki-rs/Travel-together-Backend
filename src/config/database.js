@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import logger from '../utils/logger.js';
 import env from './env.js';
+import { observeDurationMs, incrementCounter } from '../operations/metrics/metrics.service.js';
 
 const MONGO_OPTIONS = {
   maxPoolSize: 10,
@@ -10,6 +11,35 @@ const MONGO_OPTIONS = {
 };
 
 let isConnected = false;
+
+const QUERY_OPS = ['count', 'countDocuments', 'find', 'findOne', 'findOneAndUpdate', 'findOneAndDelete', 'updateOne', 'updateMany', 'deleteOne', 'deleteMany'];
+
+mongoose.plugin((schema) => {
+  for (const op of QUERY_OPS) {
+    schema.pre(op, function queryPreHook() {
+      this.__tiiQueryStart = process.hrtime.bigint();
+    });
+
+    schema.post(op, function queryPostHook() {
+      if (!this.__tiiQueryStart) return;
+      const elapsedMs = Number(process.hrtime.bigint() - this.__tiiQueryStart) / 1_000_000;
+      observeDurationMs('tii_db_query_duration_ms', elapsedMs, { op });
+      incrementCounter('tii_db_query_total', 1, { op });
+    });
+  }
+
+  schema.pre('save', function savePreHook(next) {
+    this.__tiiSaveStart = process.hrtime.bigint();
+    next();
+  });
+
+  schema.post('save', function savePostHook() {
+    if (!this.__tiiSaveStart) return;
+    const elapsedMs = Number(process.hrtime.bigint() - this.__tiiSaveStart) / 1_000_000;
+    observeDurationMs('tii_db_query_duration_ms', elapsedMs, { op: 'save' });
+    incrementCounter('tii_db_query_total', 1, { op: 'save' });
+  });
+});
 
 const connect = async () => {
   if (isConnected) return;

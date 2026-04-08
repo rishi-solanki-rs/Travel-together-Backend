@@ -31,6 +31,18 @@ const changePasswordSchema = z.object({
   newPassword: z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/),
 });
 
+const logoutDeviceSchema = z.object({
+  deviceId: z.string().min(16),
+});
+
+const revokeAllSchema = z.object({
+  userId: z.string().optional(),
+});
+
+const stepUpSchema = z.object({
+  password: z.string().min(1),
+});
+
 const verifyOtpSchema = z.object({
   email: z.string().email().toLowerCase(),
   otp: z.string().length(6),
@@ -41,7 +53,19 @@ const resendOtpSchema = z.object({
 });
 
 
-export { registerSchema, loginSchema, refreshTokenSchema, forgotPasswordSchema, resetPasswordSchema, changePasswordSchema, verifyOtpSchema, resendOtpSchema };
+export {
+  registerSchema,
+  loginSchema,
+  refreshTokenSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  changePasswordSchema,
+  verifyOtpSchema,
+  resendOtpSchema,
+  logoutDeviceSchema,
+  revokeAllSchema,
+  stepUpSchema,
+};
 
  
 

@@ -5,6 +5,8 @@ import { authenticate } from '../../middlewares/authenticate.js';
 import ApiResponse from '../../utils/ApiResponse.js';
 import ApiError from '../../utils/ApiError.js';
 import asyncHandler from '../../utils/asyncHandler.js';
+import validateRequest from '../../middlewares/validateRequest.js';
+import { wishlistToggleSchema, wishlistListingParamsSchema } from './wishlist.validator.js';
 
 const router = express.Router();
 
@@ -38,7 +40,7 @@ const checkWishlist = asyncHandler(async (req, res) => {
 });
 
 router.get('/', authenticate, getWishlist);
-router.post('/toggle', authenticate, toggleWishlist);
-router.get('/check/:listingId', authenticate, checkWishlist);
+router.post('/toggle', authenticate, validateRequest({ body: wishlistToggleSchema }), toggleWishlist);
+router.get('/check/:listingId', authenticate, validateRequest({ params: wishlistListingParamsSchema }), checkWishlist);
 
 export default router;
