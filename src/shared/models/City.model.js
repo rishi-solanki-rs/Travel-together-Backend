@@ -4,12 +4,19 @@ const citySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     slug: { type: String, unique: true, lowercase: true, required: true },
+    countryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Country' },
+    stateId: { type: mongoose.Schema.Types.ObjectId, ref: 'State' },
     state: { type: String, required: true },
     country: { type: String, default: 'India' },
     description: String,
     shortDescription: String,
     pincode: String,
     timezone: { type: String, default: 'Asia/Kolkata' },
+    tier: String,
+    continent: String,
+    popularName: String,
+    direction: String,
+    famousFor: String,
 
     geoLocation: {
       type: { type: String, default: 'Point' },
@@ -47,6 +54,8 @@ const citySchema = new mongoose.Schema(
       ogImage: String,
     },
 
+    content: { type: mongoose.Schema.Types.Mixed, default: {} },
+
     nearbyAttractions: [String],
     popularFor: [String],
     bestTimeToVisit: String,
@@ -55,6 +64,7 @@ const citySchema = new mongoose.Schema(
 );
 
 citySchema.index({ slug: 1 });
+citySchema.index({ countryId: 1, stateId: 1, isDeleted: 1 });
 citySchema.index({ state: 1 });
 citySchema.index({ isActive: 1, isFeatured: 1, order: 1 });
 citySchema.index({ geoLocation: '2dsphere' });

@@ -14,6 +14,17 @@ const errorHandler = (err, req, res, next) => {
     } else if (error.code === 11000) {
       const field = Object.keys(error.keyValue || {})[0] || 'field';
       error = ApiError.conflict(`Duplicate value for ${field}. This ${field} is already taken.`);
+    } else if (error.name === 'ZodError') {
+      const issues = Array.isArray(error.errors)
+        ? error.errors
+        : Array.isArray(error.issues)
+          ? error.issues
+          : [];
+      const errors = issues.map((issue) => ({
+        field: Array.isArray(issue.path) && issue.path.length ? issue.path.join('.') : 'body',
+        message: issue.message,
+      }));
+      error = ApiError.unprocessable('Validation failed', errors);
     } else if (error.name === 'ValidationError') {
       const errors = Object.values(error.errors).map(e => ({
         field: e.path,

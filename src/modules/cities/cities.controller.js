@@ -12,9 +12,14 @@ const getFeatured = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'Featured cities fetched', cities);
 });
 
-const getBySlug = asyncHandler(async (req, res) => {
-  const city = await citiesService.getCityBySlug(req.params.slug);
+const getByIdentifier = asyncHandler(async (req, res) => {
+  const city = await citiesService.getCityByIdentifier(req.params.identifier);
   ApiResponse.success(res, 'City fetched', city);
+});
+
+const getPublicBySlug = asyncHandler(async (req, res) => {
+  const city = await citiesService.getPublicCityBySlug(req.params.slug);
+  ApiResponse.success(res, 'Public city page fetched', city);
 });
 
 const create = asyncHandler(async (req, res) => {
@@ -27,4 +32,14 @@ const update = asyncHandler(async (req, res) => {
   ApiResponse.success(res, 'City updated', city);
 });
 
-export { getAll, getFeatured, getBySlug, create, update };
+const updateSection = asyncHandler(async (req, res) => {
+  const city = await citiesService.updateCitySection(req.params.id, req.params.section, req.body);
+  ApiResponse.success(res, 'City section updated', city);
+});
+
+const remove = asyncHandler(async (req, res) => {
+  await citiesService.deleteCity(req.params.id);
+  ApiResponse.noContent(res);
+});
+
+export { getAll, getFeatured, getByIdentifier, getPublicBySlug, create, update, updateSection, remove };
